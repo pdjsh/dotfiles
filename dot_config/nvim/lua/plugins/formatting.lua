@@ -38,6 +38,7 @@ return {
         yaml = { "prettier" },
         markdown = { "prettier" },
         graphql = { "prettier" },
+        nix = { "nixfmt" },
       }
 
       -- Configure prettier to use project config and debug
