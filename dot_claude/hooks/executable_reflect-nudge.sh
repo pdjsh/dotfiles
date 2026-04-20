@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Nudges the user to run /reflect roughly every 20 session starts.
 # Reads stdin (session start payload — ignored here) and writes a systemMessage
 # every Nth time so the user sees a gentle reminder without feeling nagged.
