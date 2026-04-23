@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Pre-commit hook: scan staged changes for secrets with gitleaks.
+# Skips gracefully if gitleaks is not installed on this machine.
+
+set -e
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+gitleaks not found; skipping secret scan.
+Install to enable: brew install gitleaks | pacman -S gitleaks | nix-env -iA nixpkgs.gitleaks
+EOF
+  exit 0
+fi
+
+gitleaks protect --staged --redact --verbose
