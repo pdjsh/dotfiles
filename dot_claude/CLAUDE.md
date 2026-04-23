@@ -50,6 +50,14 @@ Trivial fixes can skip brainstorm/plan. Non-trivial changes should not.
 - Supabase: RLS on every table, in the same migration.
 - Don't run destructive DB commands (migrations, writes, resets) without explicit approval, even if auto mode would allow them.
 
+## Commits & PRs
+
+- Never add a `Co-Authored-By` line to commits.
+- Use semantic commit syntax (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, etc.).
+- Keep commit messages to a single line — no description body.
+- Never add "Generated with Claude Code" or similar attribution to PR descriptions.
+- Never add a test plan section to PR descriptions.
+
 ## Self-improvement
 
 Periodically run `/reflect` (or accept the suggestion when it surfaces) to review recent feedback and propose updates to CLAUDE.md, skills, and settings. Reflection never auto-applies changes — it proposes, I decide.
