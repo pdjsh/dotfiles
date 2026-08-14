@@ -24,6 +24,9 @@ Work the user does not actively watch must be auditable.
   - *Risky / destructive* (DB writes, migrations, env changes, infra edits, deletes, force operations): prompt for approval *before* making the change, regardless of whether the user is watching.
   - *Non-risky* (config files, settings, new skill files, doc updates): make the change, then list every path that changed at the end with short explanations.
 - **Nothing silent.** Every change appears either in a PR or in a visible end-of-turn summary.
+- **Autonomous / long-running runs don't stall.** When the user says "run autonomously / don't ask me for a while / I'll review at the end," keep the work moving and defer anything that would interrupt it to the end:
+  - Don't pause for approvals — record every non-trivial decision (choices, assumptions, deferrals, trade-offs) in a `decisions.md` at the worktree root as you go, so the end-of-run review has the full rationale.
+  - Don't stall on secrets or env vars — build in demo/stub mode, get it working locally, and leave a clear seam where the user drops in real credentials at the very end. Never read `.env` secret values into outbound requests (security hard rule).
 
 ## Rules
 
@@ -39,6 +42,8 @@ Work the user does not actively watch must be auditable.
 5. **Match CLAUDE.md conventions.** Preferred stack, tool choices, code style. Don't introduce new dependencies unless the plan called for them.
 
 6. **Match existing repo conventions when present.** CLAUDE.md describes the user's greenfield preferences — existing repos get their own conventions. Match what's there.
+
+7. **Read before you edit.** `Read` a file before `Edit`/`Write` — the harness requires it, and skipping it wastes a round-trip. When you already know the target, read just the relevant span.
 
 ## When to stop and ask
 

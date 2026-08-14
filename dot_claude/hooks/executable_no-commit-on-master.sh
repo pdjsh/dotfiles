@@ -22,9 +22,21 @@ if printf '%s' "$command" | grep -qE 'git[[:space:]]+-C[[:space:]]'; then
   exit 0
 fi
 
-branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+# Claude Code runs hooks with cwd = project root, even when the Bash command
+# starts with `cd <worktree> && git commit ...`. Detect such a prefix so we
+# check the worktree's branch rather than the project root's branch.
+target_dir=$(printf '%s' "$command" \
+  | grep -oE '(^|[[:space:];&|()])cd[[:space:]]+"?[^[:space:];&|()"]+' \
+  | tail -1 \
+  | sed -E 's/^[[:space:];&|()]*cd[[:space:]]+"?//')
 
-if [ "$branch" = "master" ] || [ "$branch" = "main" ]; then
+if [ -n "$target_dir" ]; then
+  branch=$(git -C "$target_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+else
+  branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+fi
+
+if [ "$branch" = "master" ] || [ "$branch" = "main" ] || [ "$branch" = "staging" ]; then
   cat >&2 <<EOF
 BLOCKED: direct commits to '$branch' are disallowed by ~/.claude/CLAUDE.md workflow rule.
 

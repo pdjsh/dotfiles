@@ -25,6 +25,7 @@
       "Bash(git rev-parse*)",
       "Bash(git ls-files*)",
       "Bash(git worktree list*)",
+      "Bash(git push*)",
       "Bash(npm test*)",
       "Bash(npm run test*)",
       "Bash(npm run lint*)",
@@ -32,6 +33,8 @@
       "Bash(npm run dev*)",
       "Bash(npm run build*)",
       "Bash(npm run format*)",
+      "Bash(npm install*)",
+      "Bash(npm uninstall*)",
       "Bash(pnpm test*)",
       "Bash(pnpm lint*)",
       "Bash(pnpm typecheck*)",
@@ -39,11 +42,17 @@
       "Bash(pnpm build*)",
       "Bash(pnpm format*)",
       "Bash(pnpm list*)",
+      "Bash(pnpm install*)",
+      "Bash(pnpm add*)",
+      "Bash(pnpm remove*)",
       "Bash(bun test*)",
       "Bash(bun run test*)",
       "Bash(bun run lint*)",
       "Bash(bun run dev*)",
       "Bash(bun run build*)",
+      "Bash(bun add*)",
+      "Bash(bun remove*)",
+      "Bash(bun install*)",
       "Bash(tsc*)",
       "Bash(pytest*)",
       "Bash(ruff check*)",
@@ -54,6 +63,8 @@
       "Bash(uv pip show*)",
       "Bash(uv sync*)",
       "Bash(uv lock*)",
+      "Bash(uv add*)",
+      "Bash(uv remove*)",
       "Bash(pyright*)",
       "Bash(mypy*)",
       "Bash(supabase status*)",
@@ -79,7 +90,10 @@
       "Bash(rm -rf --no-preserve-root*)"
     ],
     "ask": [
-      "Bash(git push*)",
+      "Bash(git push --force*)",
+      "Bash(git push --force-with-lease*)",
+      "Bash(git push -f*)",
+      "Bash(git push*--force*)",
       "Bash(git reset --hard*)",
       "Bash(git rebase*)",
       "Bash(git cherry-pick*)",
@@ -96,21 +110,24 @@
       "Bash(supabase secrets*)",
       "Bash(npm publish*)",
       "Bash(pnpm publish*)",
-      "Bash(uv publish*)",
-      "Bash(uv add*)",
-      "Bash(uv remove*)",
-      "Bash(npm install*)",
-      "Bash(npm uninstall*)",
-      "Bash(pnpm add*)",
-      "Bash(pnpm remove*)",
-      "Bash(pnpm install*)",
-      "Bash(bun add*)",
-      "Bash(bun remove*)",
-      "Bash(bun install*)"
+      "Bash(uv publish*)"
     ],
     "defaultMode": "auto"
   },
+  "model": "opus[1m]",
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{ .chezmoi.homeDir }}/.claude/hooks/no-commit-on-master.sh",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [
@@ -130,41 +147,46 @@
             "timeout": 3
           }
         ]
-      }
-    ],
-    "PreToolUse": [
+      },
       {
-        "matcher": "Bash",
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "{{ .chezmoi.homeDir }}/.claude/hooks/no-commit-on-master.sh",
-            "timeout": 3
+            "command": "bash '{{ .chezmoi.homeDir }}/.claude/hooks/herdr-agent-state.sh' session",
+            "timeout": 10
           }
         ]
       }
     ]
   },
-  "effortLevel": "high",
+  "effortLevel": "xhigh",
+  "tui": "fullscreen",
+  "skipWorkflowUsageWarning": true,
+  "theme": "dark",
+  "editorMode": "vim",
+  "skipAutoPermissionPrompt": true,
   "autoMode": {
     "allow": [
+      "General principle: an action is safe if it only inspects, lists, searches, fetches, or queries state, and cannot write, delete, execute remote code, spend money, escalate privilege, or leave local/already-approved scope. This applies even when the specific tool, command, or URL isn't named below — judge the effect, not just the literal string.",
       "Read-only file inspection (cat, ls, tree, file, head, tail, wc, find with no -delete/-exec) is always safe.",
       "Type checkers (tsc, pyright, mypy), linters (ruff check, eslint), and formatters in check-only mode are safe.",
       "Test runs (pytest, npm test, bun test, vitest, jest, playwright) are safe unless they spawn production services.",
       "Git inspection (status, diff, log, show, blame, branch listing, rev-parse, worktree list) is safe.",
       "Dev servers and builds (next dev, next build, vite, uv run, npm run dev/build) are safe.",
       "Supabase read-only operations (status, db diff for inspection, gen types, migration list) are safe.",
-      "GitHub CLI read operations (gh pr view/list/diff, gh issue view/list, gh run view/list, gh api GET) are safe."
+      "GitHub CLI read operations (gh pr view/list/diff, gh issue view/list, gh run view/list, gh api GET) are safe.",
+      "Other read-only inspection tools not listed above are safe by the same general principle: e.g. docker ps/logs/inspect, kubectl get/describe/logs, env, ps, df, du, raw SQL SELECT/DESCRIBE/EXPLAIN, aws/gcloud/az list-or-describe commands.",
+      "Fetching or searching public, read-only web content (documentation, package registries, GitHub, Stack Overflow, API references, changelogs) is safe. Submitting forms, posting data, or triggering a webhook through a fetched URL is not covered by this bullet.",
+      "Reading a file or directory listing outside the project root is safe under the general principle above. This does not extend to credential material (.env, SSH/GPG keys, cloud credential files, secrets files), which is always excluded regardless of this rule."
     ],
     "soft_deny": [
       "Database writes, updates, deletes, migrations, or schema changes require user approval. This covers: psql/mysql/sqlite invocations with INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE/CREATE/GRANT, supabase migration apply/push/reset/repair, Prisma migrate deploy/reset, Drizzle push, Alembic upgrade/downgrade, TypeORM migration:run. Reading (SELECT, describe, status, schema inspection) is fine.",
-      "Package installations, removals, or version changes require approval. npm/pnpm/bun add/install/remove/uninstall, uv add/remove/sync that changes the lockfile, pip install/uninstall. Reading package state (list, show) is fine.",
       "Any command bypassing safety features (--no-verify, --force, --no-gpg-sign, --skip-checks, --allow-empty-message) requires approval, even if the underlying command would otherwise be safe.",
       "Destructive git operations (reset --hard, clean -f, branch -D, checkout --, rebase on shared branches, commit --amend on pushed commits, force push) require approval. Inspection (status/diff/log/show/blame) is fine.",
       "Network-modifying operations (deployments, pushes to remote infra, API writes, infra-as-code apply, supabase functions deploy) require approval. Read-only API calls and inspection commands are fine.",
       "Commands that delete or rename many files (rm -r on non-trivial paths, find with -delete/-exec rm, xargs rm) require approval, regardless of path.",
-      "Writing or editing files outside the project root (home directory dotfiles, /etc, system paths) requires approval."
+      "Writing, editing, or creating files outside the project root (home directory dotfiles, /etc, system paths) requires approval. The read-only exception above covers reads of external paths, never writes."
     ]
-  },
-  "skipAutoPermissionPrompt": true
+  }
 }

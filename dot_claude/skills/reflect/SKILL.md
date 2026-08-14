@@ -11,7 +11,7 @@ Goal: turn accumulated in-session feedback into durable config improvements. You
 
 Walk these before proposing anything:
 
-1. **Recent conversation transcripts** — `~/.claude/projects/` subdirectories contain session logs. Look for:
+1. **Recent conversation transcripts** — Claude Code stores session logs under `~/.claude/projects/`; opencode stores them under `~/.local/share/opencode/storage/` plus `~/.local/share/opencode/opencode.db`. Scan whichever exist. Look for:
    - Patterns of correction (user said "don't do X" multiple times)
    - Patterns of friction (same permission prompt repeated, same skill failing to trigger)
    - Surprising approvals (user liked an unusual approach — worth preserving)
@@ -25,11 +25,12 @@ Walk these before proposing anything:
    - Did any skill fail to trigger when it should have? → Tighten trigger description.
    - Did one fire when it shouldn't? → Narrow trigger description.
    - Is any skill's body outdated, contradicted by new feedback, or missing a section?
-5. **Settings.json** — `~/.claude/settings.json`.
+5. **Permissions** — `~/.claude/settings.json` (Claude Code) and `~/.config/opencode/opencode.json` (opencode).
    - Did any permission prompt fire multiple times for the same command pattern? → Candidate for `allow`.
-   - Did auto mode approve something that should have gated? → Candidate for `ask` or `deny`, or tune `autoMode.soft_deny`.
-6. **Commands** — `~/.claude/commands/*.md`. Same lens as skills.
-7. **Hooks** — any broken? Any that fire too often / not often enough?
+   - Did auto-approval let something through that should have gated? → Candidate for `ask` or `deny`, or tune `autoMode.soft_deny` (Claude Code only).
+   - opencode applies the LAST matching rule and Claude Code the FIRST, so fixing a rule may mean moving it rather than rewording it.
+6. **Commands** — `~/.claude/commands/*.md` and `~/.config/opencode/commands/*.md`. Same lens as skills.
+7. **Hooks and plugins** — Claude Code hooks live in `~/.claude/hooks/`; their opencode equivalents live in `~/.config/opencode/plugin/`. Any broken? Any firing too often / not often enough? Any pair that has drifted out of sync between harnesses?
 
 ## Proposal categories
 
@@ -38,10 +39,10 @@ For each finding, propose exactly one of:
 - **CLAUDE.md edit** — add, remove, or clarify a standing instruction.
 - **Skill edit** — tighten/loosen trigger description, edit content, split a skill, or retire one.
 - **New skill** — a recurring pattern not yet covered.
-- **Settings change** — add to `allow` / `ask` / `deny`, adjust `autoMode.soft_deny` or `autoMode.allow`.
+- **Permission change** — add to `allow` / `ask` / `deny` in either harness; adjust `autoMode.soft_deny` or `autoMode.allow` (Claude Code).
 - **Memory promotion** — a feedback memory that's fired often → merge into CLAUDE.md or a skill.
 - **Memory retirement** — stale, contradicted, or now redundant memory.
-- **Hook change** — add, remove, or adjust a hook.
+- **Hook / plugin change** — add, remove, or adjust a Claude Code hook or an opencode plugin.
 
 ## Output format
 

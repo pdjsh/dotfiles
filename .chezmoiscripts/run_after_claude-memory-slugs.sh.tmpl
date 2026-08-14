@@ -1,0 +1,38 @@
+#!/bin/sh
+# Claude Code keys per-project memory by a slug of the project's ABSOLUTE path, with
+# slashes replaced by dashes: /home/pdjsh/Projects/foo -> -home-pdjsh-Projects-foo.
+#
+# That makes the directory names machine-specific. The ones committed here were created
+# on Linux under /home/pdjsh; on macOS the home directory is /Users/pdjsh, so Claude
+# looks for -Users-pdjsh-Projects-foo, finds nothing, and silently starts with no memory.
+#
+# Note that memory itself is NOT managed by chezmoi — this repo is public, and memory names
+# internal systems. It comes from the private pdjsh/claude-memory repo, cloned as a git repo
+# rooted at ~/.claude/projects. This script only fixes up the directory names afterwards,
+# which is why it lives here rather than there: chezmoi already runs on every machine.
+#
+# Symlink rather than rename, deliberately: both slugs then resolve to one directory, so
+# memories written on this machine land in the path the memory repo tracks and a plain
+# `git -C ~/.claude/projects add -A` picks them up. Renaming would split memory in two.
+#
+# Idempotent and non-destructive: it only ever creates a symlink that does not exist.
+set -eu
+
+STORED_PREFIX="-home-pdjsh"
+LOCAL_PREFIX="{{ .chezmoi.homeDir | replace "/" "-" }}"
+
+# Same machine shape as the one that committed these — nothing to do.
+[ "$STORED_PREFIX" = "$LOCAL_PREFIX" ] && exit 0
+
+PROJECTS="{{ .chezmoi.homeDir }}/.claude/projects"
+[ -d "$PROJECTS" ] || exit 0
+
+cd "$PROJECTS"
+for dir in "$STORED_PREFIX"*; do
+    [ -d "$dir" ] || continue
+    link="${LOCAL_PREFIX}${dir#"$STORED_PREFIX"}"
+    if [ ! -e "$link" ]; then
+        ln -s "$dir" "$link"
+        echo "claude memory: linked $link -> $dir"
+    fi
+done

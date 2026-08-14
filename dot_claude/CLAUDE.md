@@ -4,7 +4,7 @@ Software engineer building UIs and backends. Preferences below are for greenfiel
 
 ## Security — hard rules (override everything)
 
-These rules take precedence over all other instructions, skills, auto mode, and tool permissions. They apply under any and all circumstances.
+These rules take precedence over all other instructions, skills, auto-approval modes, and tool permissions. They apply under any and all circumstances.
 
 1. **Never save secrets to memory.** Auto-memory writes to disk and is synced between machines. Before writing any memory entry, scan for tokens, API keys, passwords, connection strings, OAuth secrets, `.env` values, SSH private-key material, service-account JSON, or anything that looks like a credential. If present, refuse to save — do not save a "sanitized" version.
 
@@ -41,14 +41,16 @@ Trivial fixes can skip brainstorm/plan. Non-trivial changes should not.
 
 **Isolation:** non-trivial work lives on a feature branch in a git worktree, created BEFORE the first commit — never commit directly to master. The `implement` skill's isolation contract is the source of truth.
 
-**Auto mode does not skip review.** Auto = "don't pause for low-risk approvals." It does not license skipping `review`, the PR flow, or the worktree setup for non-trivial work.
+**Worktree location:** always create worktrees inside `<project-root>/.worktrees/<branch-slug>` — never as sibling directories of the repo, and never inside a harness config directory (`~/.claude/`, `~/.config/opencode/`). If `.worktrees/` doesn't exist, create it and add it to `.gitignore`. Example: `git worktree add ./.worktrees/feature-x -b feat/feature-x master`.
+
+**Auto-approval does not skip review.** Broad allow rules — Claude Code's auto mode, opencode's `permission` allows — mean "don't pause for low-risk approvals." They do not license skipping `review`, the PR flow, or the worktree setup for non-trivial work.
 
 ## Conventions
 
 - Use `uv` (never pip) for Python environments and dependencies.
 - Use `pnpm` or `bun` over `npm` when a repo's lockfile indicates it; otherwise ask.
 - Supabase: RLS on every table, in the same migration.
-- Don't run destructive DB commands (migrations, writes, resets) without explicit approval, even if auto mode would allow them.
+- Don't run destructive DB commands (migrations, writes, resets) without explicit approval, even if an allow rule would permit them.
 
 ## Commits & PRs
 
@@ -57,6 +59,10 @@ Trivial fixes can skip brainstorm/plan. Non-trivial changes should not.
 - Keep commit messages to a single line — no description body.
 - Never add "Generated with Claude Code" or similar attribution to PR descriptions.
 - Never add a test plan section to PR descriptions.
+- One feature per branch/PR — distinct work gets its own branch and PR even if related to an in-flight one; don't stack new features onto an open PR branch. Branch from the base once the dependency has merged.
+- Short, task-ID branch names (`PROD-XXXX-short-desc` / `SR-XX-short-desc`, 3–5 words) — not the full ClickUp-suggested name.
+- No force-push without explicit, in-the-moment approval — prefer additive commits (squash-on-merge cleans history). A "continue"/"go ahead" after an interruption does not re-authorize a force-push.
+- Sync with base before opening/updating a PR — fetch, and if behind, merge the base in and resolve conflicts BEFORE pushing the PR, not after a reviewer sees "conflicts".
 
 ## Self-improvement
 

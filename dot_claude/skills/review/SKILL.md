@@ -1,6 +1,6 @@
 ---
 name: review
-description: Use after implementation is complete, before the user commits, merges, or the PR is opened. Runs a self-review pass, invokes /review and /security-review, runs the relevant test suite, checks documentation for any public API changes. Surfaces findings as a punch list. For autonomous flows, review happens before the PR is raised so findings go into the PR description.
+description: Use after implementation is complete, before the user commits, merges, or the PR is opened. Runs a self-review pass, gets an independent code-review and security pass, runs the relevant test suite, checks documentation for any public API changes. Surfaces findings as a punch list. For autonomous flows, review happens before the PR is raised so findings go into the PR description.
 ---
 
 # Review
@@ -29,9 +29,14 @@ Run the relevant test suite (`pytest`, `npm test`, `bun test` — whatever the r
 
 If tests failed, fix them before anything else and note what broke.
 
-## Pass 3: built-in tools
+## Pass 3: second opinions
 
-Invoke `/review` (general code review) and `/security-review` (security pass). For autonomous flows, these can run as parallel background subagents — collect findings before composing the PR description.
+Get an independent code-review pass and an independent security pass, using whichever mechanism the current harness provides:
+
+- **Claude Code:** invoke `/review` (general code review) and `/security-review` (security pass).
+- **opencode:** dispatch the `senior-code-reviewer` and `security-auditor` subagents. There are no `/review` or `/security-review` commands in opencode — do not try to call them.
+
+Either way, run the two in parallel and collect findings before composing the PR description.
 
 Filter findings: not every "suggestion" is worth the user's time. Promote real issues to the punch list; set aside nits or flag them as nits.
 
@@ -53,7 +58,7 @@ Hand the user a walkable punch list. Example:
 **Verified:**
 - All 14 tests pass (added 3 for new behavior)
 - No scope creep; diff matches the plan
-- /security-review: no findings
+- Security pass: no findings
 - Types: clean, no `any` introduced
 
 **Open items:**

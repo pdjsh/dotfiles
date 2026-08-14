@@ -1,0 +1,25 @@
+# Claude Code keeps roughly half a gigabyte of generated state under ~/.claude.
+# Only hand-written config (CLAUDE.md, settings, skills, commands, hooks) and the
+# per-project memory directories belong in this repo. Listing the rest here keeps a
+# stray `chezmoi add ~/.claude` from hoovering up transcripts and caches.
+.claude/backups
+.claude/cache
+.claude/chrome
+.claude/debug
+.claude/file-history
+.claude/jobs
+.claude/paste-cache
+.claude/plugins
+.claude/session-env
+.claude/sessions
+.claude/shell-snapshots
+.claude/tasks
+.claude/telemetry
+
+# projects/ holds session transcripts AND per-project memory. Neither belongs here.
+#
+# THIS REPO IS PUBLIC. Memory files name internal systems and, in at least one case, which
+# secret store holds which production key — so memory is deliberately kept out and lives in
+# the private pdjsh/claude-memory repo instead (a git repo rooted at ~/.claude/projects with
+# its own allowlist). Do not remove this line to "sync memory too".
+.claude/projects
