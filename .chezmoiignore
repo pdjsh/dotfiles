@@ -33,3 +33,10 @@
 .config/herdr/.plugins.lock
 .config/herdr/release-notes.json
 .config/herdr/session.json
+
+# ~/Library/LaunchAgents is macOS-only. On Linux the git-refresh job would want a
+# systemd user timer instead, which does not exist yet — so the plist is simply
+# not part of the source state there.
+{{ if ne .chezmoi.os "darwin" }}
+Library
+{{ end }}

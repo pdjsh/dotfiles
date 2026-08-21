@@ -1,0 +1,574 @@
+#!/usr/bin/env python3
+"""Keep every local repository's refs — and its base branches — current.
+
+Run from a launchd agent every hour. The problem it solves is that `ahead`,
+`behind` and "N commits behind origin/main" are all computed against *local*
+remote-tracking refs, so after a week without a manual `git fetch` those numbers
+are confidently wrong. Anything reading them — `daybook`, `/standup`, or your own
+eyes on `git status` — inherits that.
+
+Three things happen per repository, in increasing order of how much they touch:
+
+  1. `git fetch --prune`, once per remote. Remote-tracking refs and nothing else.
+  2. Base branches that are **not** checked out anywhere are fast-forwarded by
+     refspec. This writes a ref, never a file, and git itself refuses anything
+     that is not a fast-forward.
+  3. A base branch that **is** checked out is fast-forwarded only when the tree
+     is clean, the merge is a true fast-forward, and no agent is working in that
+     checkout. Set `advance_checked_out = false` to turn this off.
+
+Feature branches are deliberately left alone past step 1: they are where you are
+working, and a file changing underneath an editor or an agent mid-task is worth
+far more than the convenience. Step 2 still updates them if they happen to be
+merge-clean and parked, which costs nothing.
+
+Repository discovery and the base-branch list are read from
+`~/.config/daybook/config.toml`, deliberately the same file `daybook-collect`
+uses: two lists of "my repositories" would drift, and this job exists to make
+that tool's numbers honest.
+
+    git-refresh                 # what launchd runs
+    git-refresh --dry-run       # print the plan, touch nothing
+    git-refresh --verbose       # per-repository detail on stdout too
+    git-refresh --json          # machine-readable summary
+"""
+
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import datetime as dt
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+HOME = Path.home()
+LOG_PATH = HOME / "Library" / "Logs" / "git-refresh.log"
+LOG_MAX_BYTES = 512 * 1024
+
+# Same file, same keys as daybook-collect. Anything not set here falls back to
+# the defaults below, so a machine with no config file still works.
+CONFIG_PATH = Path(os.environ.get("XDG_CONFIG_HOME") or (HOME / ".config")) / "daybook" / "config.toml"
+
+DEFAULTS: dict[str, Any] = {
+    "repo_roots": ["~/Projects"],
+    "extra_repos": ["~/.local/share/chezmoi"],
+    "worktree_roots": ["~/.herdr/worktrees"],
+    # Branches worth keeping current without being asked. A trailing `/` makes an
+    # entry a prefix match.
+    "long_lived_branches": [
+        "main",
+        "master",
+        "staging",
+        "develop",
+        "dev",
+        "production",
+        "prod",
+        "trunk",
+        "release/",
+        "hotfix/",
+    ],
+    # Fast-forward a base branch that is currently checked out, when the tree is
+    # clean and no agent is working in it.
+    "advance_checked_out": True,
+    # Remotes to leave alone. A mirror this machine has no credentials for would
+    # otherwise fail on every single run, for ever, and there is nothing the job
+    # can do about it. Named remotes only — this is not a pattern list.
+    "skip_remotes": [],
+    # A fetch over a dead VPN can hang for a long time; launchd would then stack
+    # runs on top of each other.
+    "timeout": 90,
+    # Files whose arrival in a working-tree fast-forward means the installed
+    # dependencies no longer match the checkout. Advancing the branch is still
+    # the right call; silently leaving you to discover it at the next `dev` run
+    # is not, so it gets a log line.
+    "dependency_manifests": [
+        "package.json",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "bun.lockb",
+        "bun.lock",
+        "uv.lock",
+        "poetry.lock",
+        "requirements.txt",
+        "pyproject.toml",
+        "Cargo.lock",
+        "Gemfile.lock",
+        "go.sum",
+    ],
+}
+
+
+def expand(p: str | Path) -> Path:
+    return Path(os.path.expandvars(str(p))).expanduser()
+
+
+def load_config() -> dict[str, Any]:
+    cfg = dict(DEFAULTS)
+    if not CONFIG_PATH.exists():
+        return cfg
+    try:
+        import tomllib
+
+        with CONFIG_PATH.open("rb") as handle:
+            loaded = tomllib.load(handle)
+    except Exception as exc:  # noqa: BLE001 — a bad config must not stop the fetch
+        cfg["_warning"] = f"ignoring {CONFIG_PATH}: {type(exc).__name__}: {exc}"
+        return cfg
+    # Only the keys this tool understands, so daybook-only settings passing
+    # through cannot change behaviour here by accident.
+    for key in DEFAULTS:
+        if key in loaded:
+            cfg[key] = loaded[key]
+    return cfg
+
+
+def run(args: list[str], timeout: float) -> tuple[int, str, str]:
+    """Run a command, never raise."""
+    try:
+        proc = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            # Unattended: never sit on a credential or host-key prompt.
+            stdin=subprocess.DEVNULL,
+            env={
+                **os.environ,
+                "GIT_TERMINAL_PROMPT": "0",
+                "GIT_OPTIONAL_LOCKS": "0",
+                "SSH_ASKPASS": "",
+                "DISPLAY": "",
+            },
+        )
+        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return 124, "", f"timed out after {timeout:.0f}s"
+    except (OSError, ValueError) as exc:
+        return 126, "", f"{type(exc).__name__}: {exc}"
+
+
+def is_long_lived(branch: str, patterns: list[str]) -> bool:
+    """Whether a branch is one worth keeping current unprompted.
+
+    A trailing `/` makes a pattern a prefix, so `release/` covers
+    `release/2026-08` without also matching `release-notes-fix`.
+    """
+    name = (branch or "").strip()
+    for raw in patterns:
+        text = str(raw).strip()
+        if not text:
+            continue
+        if text.endswith("/"):
+            if name.startswith(text):
+                return True
+        elif name == text:
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# discovery
+# ---------------------------------------------------------------------------
+
+
+def discover(cfg: dict[str, Any]) -> list[Path]:
+    """Main checkouts only.
+
+    Linked worktrees share their parent's object store and refs, so fetching once
+    per repository updates all of them. `worktree_roots` is scanned so a worktree
+    whose parent has moved away still gets its own fetch.
+    """
+    found: dict[str, Path] = {}
+
+    def add(path: Path) -> None:
+        if (path / ".git").is_dir():
+            found.setdefault(str(path.resolve()), path)
+
+    for root in cfg.get("repo_roots", []):
+        base = expand(root)
+        if base.is_dir():
+            for child in sorted(base.iterdir()):
+                if child.is_dir() and not child.name.startswith("."):
+                    add(child)
+    for extra in cfg.get("extra_repos", []):
+        add(expand(extra))
+    for root in cfg.get("worktree_roots", []):
+        base = expand(root)
+        if not base.is_dir():
+            continue
+        for repo_dir in sorted(base.iterdir()):
+            if not repo_dir.is_dir():
+                continue
+            for wt in sorted(repo_dir.iterdir()):
+                # A linked worktree has `.git` as a *file*; `add` skips those,
+                # so only an orphan with its own repository lands here.
+                add(wt)
+    return list(found.values())
+
+
+def busy_checkouts() -> set[str]:
+    """Directories where an agent is currently working.
+
+    Best-effort: no herdr, no server, or an unparseable reply all mean "nothing
+    is busy", which is the same answer this returned before herdr existed.
+    """
+    if not shutil.which("herdr"):
+        return set()
+    rc, out, _ = run(["herdr", "agent", "list"], timeout=5)
+    if rc != 0 or not out:
+        return set()
+    try:
+        agents = ((json.loads(out.splitlines()[0]).get("result") or {}).get("agents")) or []
+    except (json.JSONDecodeError, IndexError, AttributeError):
+        return set()
+    busy = set()
+    for agent in agents:
+        # `blocked` counts as busy: it is waiting on a human, and its working
+        # tree is mid-task even though nothing is executing right now.
+        if agent.get("agent_status") in ("working", "blocked"):
+            for key in ("cwd", "foreground_cwd"):
+                if agent.get(key):
+                    busy.add(str(agent[key]).rstrip("/"))
+    return busy
+
+
+# ---------------------------------------------------------------------------
+# per-repository work
+# ---------------------------------------------------------------------------
+
+
+def in_progress(repo: Path, timeout: float) -> str | None:
+    """The name of an in-flight git operation, if any.
+
+    Fetching during a rebase is harmless, but advancing a ref underneath one is
+    not, so a repository mid-operation gets step 1 and nothing more.
+    """
+    rc, git_dir, _ = run(["git", "-C", str(repo), "rev-parse", "--git-dir"], timeout=timeout)
+    if rc != 0:
+        return None
+    base = Path(git_dir) if Path(git_dir).is_absolute() else repo / git_dir
+    for name, marker in (
+        ("rebase", "rebase-merge"),
+        ("rebase", "rebase-apply"),
+        ("merge", "MERGE_HEAD"),
+        ("cherry-pick", "CHERRY_PICK_HEAD"),
+        ("revert", "REVERT_HEAD"),
+        ("bisect", "BISECT_LOG"),
+    ):
+        if (base / marker).exists():
+            return name
+    return None
+
+
+def checked_out_branches(repo: Path, timeout: float) -> set[str]:
+    """Branches checked out in this repository or any of its worktrees.
+
+    `git fetch <remote> <branch>:<branch>` refuses to write a ref that is checked
+    out anywhere, so knowing this up front turns a guaranteed error into a
+    deliberate choice between skipping and merging.
+    """
+    rc, out, _ = run(["git", "-C", str(repo), "worktree", "list", "--porcelain"], timeout=timeout)
+    if rc != 0:
+        return set()
+    return {
+        line.split("refs/heads/", 1)[1].strip()
+        for line in out.splitlines()
+        if line.startswith("branch ") and "refs/heads/" in line
+    }
+
+
+def tracking_branches(repo: Path, timeout: float) -> list[tuple[str, str, str]]:
+    """(branch, remote, remote_branch) for every local branch with an upstream."""
+    rc, out, _ = run(
+        [
+            "git", "-C", str(repo), "for-each-ref", "refs/heads",
+            "--format=%(refname:short)%09%(upstream:remotename)%09%(upstream:lstrip=3)",
+        ],
+        timeout=timeout,
+    )
+    if rc != 0:
+        return []
+    result = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3 and all(parts):
+            result.append((parts[0], parts[1], parts[2]))
+    return result
+
+
+def is_clean(repo: Path, timeout: float) -> bool:
+    rc, out, _ = run(
+        ["git", "-C", str(repo), "status", "--porcelain=v1", "--untracked-files=no"],
+        timeout=timeout,
+    )
+    return rc == 0 and not out.strip()
+
+
+def behind_upstream(repo: Path, branch: str, timeout: float) -> int | None:
+    """Commits the upstream has that `branch` does not, or None if it has diverged."""
+    rc, out, _ = run(
+        ["git", "-C", str(repo), "rev-list", "--left-right", "--count", f"{branch}...{branch}@{{upstream}}"],
+        timeout=timeout,
+    )
+    parts = out.split()
+    if rc != 0 or len(parts) != 2 or not all(p.isdigit() for p in parts):
+        return None
+    ahead, behind = int(parts[0]), int(parts[1])
+    return None if ahead else behind
+
+
+def remotes(repo: Path, timeout: float) -> list[str]:
+    rc, out, _ = run(["git", "-C", str(repo), "remote"], timeout=timeout)
+    if rc != 0:
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def fetch_all(repo: Path, cfg: dict[str, Any], timeout: float) -> tuple[list[str], list[str]]:
+    """Fetch every remote, one at a time. Returns (fetched, failures).
+
+    Not `--all`: that is a single command with a single exit code, so one
+    unreachable mirror makes the whole fetch look failed — and the first version
+    of this script then skipped the repository's branch work entirely because of
+    a remote nothing tracks. Per-remote, a mirror this machine cannot
+    authenticate to costs one warning and nothing else.
+    """
+    skip = {str(r).strip() for r in cfg.get("skip_remotes", [])}
+    fetched: list[str] = []
+    failures: list[str] = []
+    for remote in remotes(repo, timeout):
+        if remote in skip:
+            continue
+        rc, _, err = run(
+            ["git", "-C", str(repo), "fetch", "--prune", "--quiet", remote], timeout=timeout
+        )
+        if rc == 0:
+            fetched.append(remote)
+        else:
+            failures.append(f"{remote}: {summarise_git_error(err) or rc}")
+    return fetched, failures
+
+
+def summarise_git_error(stderr: str) -> str:
+    """The one useful line out of git's multi-line failure output."""
+    lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
+    for line in lines:
+        if line.startswith("fatal:") or "Permission denied" in line or "Could not resolve" in line:
+            return line
+    return lines[-1] if lines else ""
+
+
+def dependency_changes(repo: Path, cfg: dict[str, Any], timeout: float) -> list[str]:
+    """Dependency manifests that changed in the merge that just happened.
+
+    A fast-forward is safe for the repository and quietly unsafe for whatever is
+    installed next to it: a lockfile arriving means `node_modules` or `.venv` is
+    now behind the checkout, and the failure shows up much later as a confusing
+    runtime error. `ORIG_HEAD` is the pre-merge tip, which git sets for us.
+    """
+    manifests = {str(m) for m in cfg.get("dependency_manifests", [])}
+    if not manifests:
+        return []
+    rc, out, _ = run(
+        ["git", "-C", str(repo), "diff", "--name-only", "ORIG_HEAD..HEAD"], timeout=timeout
+    )
+    if rc != 0:
+        return []
+    hits = sorted({Path(line).name for line in out.splitlines() if Path(line).name in manifests})
+    return hits
+
+
+def refresh(repo: Path, cfg: dict[str, Any], busy: set[str], dry_run: bool) -> dict[str, Any]:
+    timeout = float(cfg.get("timeout", 90))
+    patterns = list(cfg.get("long_lived_branches", []))
+    report: dict[str, Any] = {
+        "repo": repo.name,
+        "path": str(repo),
+        "fetched": False,
+        "advanced": [],
+        "skipped": [],
+        "errors": [],
+        "warnings": [],
+        "deps_changed": [],
+    }
+
+    if dry_run:
+        report["fetched"] = "would fetch"
+    else:
+        fetched, failures = fetch_all(repo, cfg, timeout)
+        report["fetched"] = fetched
+        # An unreachable mirror is a warning; every remote failing is an error,
+        # because then the refs below really are stale.
+        for failure in failures:
+            (report["errors"] if not fetched else report["warnings"]).append(f"fetch {failure}")
+        if not fetched:
+            return report
+
+    blocked_by = in_progress(repo, timeout)
+    if blocked_by:
+        report["skipped"].append(f"all branches ({blocked_by} in progress)")
+        return report
+
+    checked_out = checked_out_branches(repo, timeout)
+    allow_checked_out = bool(cfg.get("advance_checked_out", True))
+
+    for branch, remote, remote_branch in tracking_branches(repo, timeout):
+        base_branch = is_long_lived(branch, patterns)
+        behind = behind_upstream(repo, branch, timeout)
+        if behind is None:
+            # Diverged, or unreadable. Either way not a fast-forward.
+            continue
+        if behind == 0:
+            continue
+
+        if branch not in checked_out:
+            # A ref write, not a file write. Safe for any branch, so feature
+            # branches get this for free when they are parked and merge-clean.
+            if dry_run:
+                report["advanced"].append(f"{branch} +{behind} (ref, dry-run)")
+                continue
+            rc, _, err = run(
+                ["git", "-C", str(repo), "fetch", remote, f"{remote_branch}:{branch}"],
+                timeout=timeout,
+            )
+            if rc == 0:
+                report["advanced"].append(f"{branch} +{behind}")
+            else:
+                report["errors"].append(f"{branch}: {err or rc}")
+            continue
+
+        # From here the branch is checked out, so advancing it writes files.
+        if not base_branch:
+            report["skipped"].append(f"{branch} +{behind} (checked out, feature branch)")
+            continue
+        if not allow_checked_out:
+            report["skipped"].append(f"{branch} +{behind} (checked out, advance disabled)")
+            continue
+        if str(repo).rstrip("/") in busy:
+            report["skipped"].append(f"{branch} +{behind} (agent working here)")
+            continue
+        if not is_clean(repo, timeout):
+            report["skipped"].append(f"{branch} +{behind} (uncommitted changes)")
+            continue
+        if dry_run:
+            report["advanced"].append(f"{branch} +{behind} (ff-only merge, dry-run)")
+            continue
+        rc, _, err = run(
+            ["git", "-C", str(repo), "merge", "--ff-only", "--quiet", f"{branch}@{{upstream}}"],
+            timeout=timeout,
+        )
+        if rc == 0:
+            report["advanced"].append(f"{branch} +{behind} (working tree)")
+            touched = dependency_changes(repo, cfg, timeout)
+            if touched:
+                report["deps_changed"].append(f"{branch}: {', '.join(touched)}")
+        else:
+            report["errors"].append(f"{branch}: ff-only merge failed: {err or rc}")
+
+    return report
+
+
+# ---------------------------------------------------------------------------
+# logging + cli
+# ---------------------------------------------------------------------------
+
+
+def rotate_log() -> None:
+    """One generation of rotation. launchd does none of its own."""
+    try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if LOG_PATH.exists() and LOG_PATH.stat().st_size > LOG_MAX_BYTES:
+            LOG_PATH.replace(LOG_PATH.with_suffix(".log.1"))
+    except OSError:
+        pass
+
+
+def write_log(lines: list[str]) -> None:
+    try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+    except OSError:
+        pass  # a missing log must not fail the run
+
+
+def summarise(reports: list[dict[str, Any]], started: dt.datetime, warning: str | None) -> list[str]:
+    stamp = started.strftime("%Y-%m-%d %H:%M:%S%z")
+    advanced = [r for r in reports if r["advanced"]]
+    failed = [r for r in reports if r["errors"]]
+    took = (dt.datetime.now().astimezone() - started).total_seconds()
+    head = (
+        f"{stamp} refreshed {len(reports)} repos in {took:.1f}s — "
+        f"{sum(len(r['advanced']) for r in reports)} branches advanced, {len(failed)} with errors"
+    )
+    lines = [head]
+    if warning:
+        lines.append(f"  ! {warning}")
+    for r in advanced:
+        lines.append(f"  {r['repo']}: {', '.join(r['advanced'])}")
+    for r in reports:
+        for warning in r.get("warnings", []):
+            lines.append(f"  {r['repo']} warning {warning}")
+    for r in reports:
+        for note in r.get("deps_changed", []):
+            lines.append(f"  {r['repo']} DEPS CHANGED {note} — reinstall before running it")
+    for r in failed:
+        for err in r["errors"]:
+            lines.append(f"  {r['repo']} ERROR {err}")
+    # Skips are the interesting silence — why a branch you expected to move
+    # didn't — so they are logged but kept below the errors.
+    for r in reports:
+        for skip in r["skipped"]:
+            lines.append(f"  {r['repo']} skipped {skip}")
+    return lines
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(
+        prog="git-refresh",
+        description="Fetch every local repository and fast-forward its base branches.",
+    )
+    ap.add_argument("--dry-run", action="store_true", help="print the plan without touching anything")
+    ap.add_argument("--verbose", "-v", action="store_true", help="write the summary to stdout as well")
+    ap.add_argument("--json", action="store_true", help="print the full report as JSON")
+    args = ap.parse_args(argv)
+
+    started = dt.datetime.now().astimezone()
+    cfg = load_config()
+    repos = discover(cfg)
+    if not repos:
+        message = f"no repositories found — check repo_roots in {CONFIG_PATH}"
+        print(message, file=sys.stderr)
+        write_log([f"{started:%Y-%m-%d %H:%M:%S%z} {message}"])
+        return 1
+
+    busy = busy_checkouts()
+    # Network-bound and independent per repository. Eight at a time keeps a dozen
+    # repositories inside a few seconds without opening a connection storm.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        reports = list(pool.map(lambda r: refresh(r, cfg, busy, args.dry_run), repos))
+
+    if args.json:
+        json.dump({"started": started.isoformat(), "repos": reports}, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 0
+
+    lines = summarise(reports, started, cfg.get("_warning"))
+    rotate_log()
+    write_log(lines)
+    if args.verbose or args.dry_run:
+        print("\n".join(lines))
+    return 1 if any(r["errors"] for r in reports) else 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

@@ -1,0 +1,24 @@
+# Shared by `daybook-collect` (the /standup briefing and the herdr daybook pane)
+# and `git-refresh` (the hourly launchd fetch). One list of "my repositories",
+# deliberately, so the tool that reports on them and the tool that keeps them
+# current can never disagree about which ones they are.
+#
+# Every key here has a built-in default; this file only records the deviations.
+
+# --- discovery -------------------------------------------------------------
+
+repo_roots = ["~/Projects"]
+extra_repos = ["~/.local/share/chezmoi"]
+worktree_roots = ["~/.herdr/worktrees"]
+
+# --- git-refresh -----------------------------------------------------------
+
+# The Codeberg mirrors are canonical for `dotfiles` and `herdr-plugins`, but this
+# laptop has no Codeberg credentials — so an hourly fetch against them fails
+# every single time with `could not read Username`. Skipped rather than warned
+# about 24 times a day. Drop this line once credentials exist here.
+skip_remotes = ["codeberg"]
+
+# Fast-forward a base branch that is currently checked out, when the tree is
+# clean and no agent is working in it. Set false to make the job refs-only.
+advance_checked_out = true
