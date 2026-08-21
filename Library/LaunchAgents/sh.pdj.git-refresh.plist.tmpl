@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hourly `git fetch` across every local repository, plus a fast-forward of the
+  base branches. See ~/.local/bin/git-refresh for what it actually does.
+
+  A launchd *agent* rather than a daemon or a crontab entry, deliberately:
+
+    - It runs as the logged-in user, in the Aqua session, so the login keychain
+      is unlocked and the osxkeychain credential helper works for the HTTPS
+      remotes. A daemon in the system domain could not reach it.
+    - launchd runs a StartInterval job that was missed while the machine slept
+      shortly after wake, so a closed laptop catches up instead of skipping the
+      hour. cron simply loses it.
+    - `launchctl` gives it a real status and exit code, which `crontab` does not.
+
+  Cadence: StartInterval, 3600s. Change the integer below, then
+  `chezmoi apply && launchctl kickstart -k gui/$(id -u)/sh.pdj.git-refresh`.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>sh.pdj.git-refresh</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{ .chezmoi.homeDir }}/.local/bin/git-refresh</string>
+  </array>
+
+  <key>StartInterval</key>
+  <integer>3600</integer>
+
+  <!-- Not at load time: `chezmoi apply` and every login would otherwise kick off
+       a fetch storm across a dozen repositories. The first run is an hour in. -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <!-- launchd hands an agent a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin),
+       which has no python3 on a Homebrew machine and no herdr. Spelled out
+       rather than inherited, because an agent inherits nothing from a shell. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>{{ .chezmoi.homeDir }}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>{{ .chezmoi.homeDir }}</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>{{ .chezmoi.homeDir }}</string>
+
+  <!-- The script keeps its own rotated log at ~/Library/Logs/git-refresh.log.
+       This file catches only what the script could not: a bad interpreter, a
+       missing binary, a traceback. It should stay empty. -->
+  <key>StandardOutPath</key>
+  <string>{{ .chezmoi.homeDir }}/Library/Logs/git-refresh.err</string>
+  <key>StandardErrorPath</key>
+  <string>{{ .chezmoi.homeDir }}/Library/Logs/git-refresh.err</string>
+
+  <!-- A fetch is IO-bound and entirely uninteresting; it should never compete
+       with an editor or a build for CPU, disk or network. -->
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>Nice</key>
+  <integer>5</integer>
+</dict>
+</plist>

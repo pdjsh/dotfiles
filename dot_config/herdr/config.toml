@@ -1,0 +1,256 @@
+# herdr configuration — agent harness (Claude Code)
+# Managed via chezmoi. tmux stays the general-purpose multiplexer;
+# herdr owns AI-agent workspaces. Never nest one inside the other.
+
+onboarding = false
+
+[theme]
+name = "tokyo-night"
+
+# Graphite palette (adapted from a downloaded design, corrected against the
+# real 0.7.3 schema — see notes below). tokyo-night above is the base only;
+# everything visible in the sidebar is overridden here.
+[theme.custom]
+# Sidebar/panel. #101014 is the mockup's sampled sidebar tone, sitting just above
+# Ghostty's #0b0b0d pane background (1.04:1 lift — subtle by design).
+panel_bg = "#101014"
+# ACTIVE ROW background. This — NOT accent, and NOT surface1 — is the token that
+# marks the active agent/space; accent only paints the tab badge and menu dot.
+# The design assigned this to surface1, which herdr never reads for it.
+# The mockup samples #262626 here, but that measures only 1.25:1 against
+# panel_bg — the same low-contrast problem this whole exercise started with.
+# #3a3a3a = 1.98:1: a deliberate, single-token deviation from the design.
+# Revert to "#262626" for pixel-exact mockup fidelity.
+surface_dim = "#3a3a3a"
+# Fallback for second-line tokens that carry no explicit fg. The design's value
+# was #525252 (2.43:1 on the panel, 1.46:1 on the active row — too dim to read);
+# lifted to 4.55:1 / 2.72:1.
+overlay0 = "#7c7c7c"
+# The branch token on the ACTIVE row picks up mauve, which in tokyo-night is
+# #bb9af7 — bright purple, straight through the graphite look. Neutralized and
+# kept in step with subtext0.
+mauve = "#d0d0d0"
+# Active row label (8.62:1 on the active background).
+text = "#e0e0e0"
+# Inactive row labels (line 1: the workspace name). 12.31:1 on the panel.
+# MUST stay brighter than the inline fg on line 2 below, or inactive rows render
+# their secondary line brighter than their primary one — which is what #8d8d8d
+# here against #b4b4b4 there used to do.
+subtext0 = "#d0d0d0"
+accent = "#42be65"
+# State icons in the sidebar (✓ idle, ✳ working) — the design's accent green.
+green = "#42be65"
+# Neutralize the blue token so no tokyo-night blue leaks into the graphite look.
+blue = "#e0e0e0"
+# NOTE: the source design also carried [ui.sidebar.agents]/[ui.sidebar.spaces]
+# with row_gap and rows keys. Those do not exist in herdr 0.7.3 (zero hits in the
+# binary) and unknown keys are silently ignored, so they were dropped rather than
+# left in looking effective. Vertical row padding is not configurable in 0.7.3.
+
+[terminal]
+# Empty = $SHELL (zsh). New panes/tabs/workspaces inherit the source pane's cwd.
+shell_mode = "auto"
+new_cwd = "follow"
+
+[update]
+channel = "stable"
+
+[keys]
+# Prefix: Ctrl+; (keeps Ctrl+a free for tmux-over-SSH muscle memory)
+prefix = "ctrl+semicolon"
+
+# Basics
+help = "prefix+?"
+settings = "prefix+shift+s"
+detach = "prefix+d"
+reload_config = "prefix+r"
+goto = "prefix+g"
+open_notification_target = "prefix+o"
+
+# Workspaces
+#   prefix+w       workspace picker
+#   prefix+shift+n new workspace, prefix+shift+w rename, prefix+shift+d close
+#   prefix+( / )   previous / next workspace
+workspace_picker = ["prefix+s", "prefix+w"]
+new_workspace = "prefix+shift+n"
+rename_workspace = "prefix+shift+w"
+close_workspace = "prefix+shift+d"
+previous_workspace = "prefix+("
+next_workspace = "prefix+)"
+
+# Agents: jump straight to agent N from anywhere
+focus_agent = "prefix+alt+1..9"
+# Direct (no-prefix) step through the sidebar agent list, in the same alt+
+# namespace as the alt+1..9 jumps below. j/k rather than ctrl+j/k because those
+# are already the pane-focus chords.
+next_agent = "alt+j"
+previous_agent = "alt+k"
+
+# Worktrees (workspace-per-feature-branch)
+new_worktree = "prefix+shift+g"
+open_worktree = "prefix+alt+g"
+remove_worktree = "prefix+alt+shift+g"
+
+# Tabs
+new_tab = "prefix+c"
+rename_tab = "prefix+comma"
+previous_tab = "prefix+p"
+next_tab = "prefix+n"
+switch_tab = "prefix+1..9"
+close_tab = "prefix+shift+x"
+
+# Panes
+#   prefix+\     split right, prefix+Enter split down
+split_vertical = "prefix+backslash"
+split_horizontal = "prefix+enter"
+close_pane = "prefix+x"
+zoom = "prefix+m"
+rename_pane = "prefix+shift+p"
+edit_scrollback = "prefix+e"
+resize_mode = "prefix+shift+r"
+
+# Pane focus: direct ctrl+hjkl chords (no prefix)
+focus_pane_left = "ctrl+h"
+focus_pane_down = "ctrl+j"
+focus_pane_up = "ctrl+k"
+focus_pane_right = "ctrl+l"
+cycle_pane_next = "prefix+tab"
+cycle_pane_previous = "prefix+shift+tab"
+
+toggle_sidebar = "prefix+b"
+
+# Navigate-mode movement
+navigate_workspace_up = "up"
+navigate_workspace_down = "down"
+navigate_pane_left = "h"
+navigate_pane_down = "j"
+navigate_pane_up = "k"
+navigate_pane_right = "l"
+
+# Direct (no-prefix) agent jump: Alt+1..9 focuses agent N in sidebar order.
+# One agent per workspace is the usual layout here, so this doubles as
+# workspace switching without the prefix.
+[keys.indexed]
+agents = "alt"
+
+[worktrees]
+directory = "~/.herdr/worktrees"
+
+[ui]
+# Terminal is 380x97 (measured via `herdr pane edges`, NOT tput — the CLI has no
+# TTY and reports a bogus 80). At 380 cols the old 32-wide sidebar was 8% of the
+# screen; 60 is ~16%, leaving the agent pane 320 cols.
+#
+# IMPORTANT: session.json persists a runtime sidebar_width that OVERRIDES
+# sidebar_width here, and it is only flushed on shutdown — so raising
+# sidebar_width alone silently does nothing on a running session. sidebar_min_width
+# IS applied as a clamp at load, so the floor is what actually moves the sidebar
+# and what makes the width survive a restart. That is why min == width below.
+# To resize: change BOTH numbers. Collapsing (prefix+b) still works regardless.
+sidebar_width = 60
+sidebar_min_width = 60
+sidebar_max_width = 76
+accent = "#42be65"
+mouse_capture = true
+mouse_scroll_lines = 3
+confirm_close = true
+prompt_new_tab_name = true
+show_agent_labels_on_pane_borders = true
+# "priority" (attention queue) reshuffles rows whenever an agent changes state,
+# which makes both alt+j/k and the alt+1..9 jumps aim at a moving target — row 3
+# is a different agent thirty seconds later. "spaces" groups by space and holds
+# that order stable, so a row's position is muscle memory. Only two values exist
+# (0.7.5); "workspaces" is an alias for "spaces".
+#
+# Row order under "spaces" is the order of the `workspaces` array in
+# session.json, i.e. workspace creation order. 0.7.5 cannot reorder it — no
+# keybinding, no socket API — so treat the order as fixed and let new
+# workspaces land at the bottom.
+agent_panel_sort = "spaces"
+# 12 of 13 workspaces have exactly one tab — reclaims a row of vertical space on
+# nearly every workspace. New tabs still work via prefix+c; the bar reappears.
+hide_tab_bar_when_single_tab = true
+
+# Sidebar row layouts (herdr 0.7.5+; these keys do NOT exist in 0.7.3 and were
+# silently ignored there). row_gap defaults to 0 — the 1 below is the vertical
+# padding between entries.
+#
+# The agent token renders the *detected agent name*, which is "claude" for every
+# pane here — useless as an identifier. Leading with workspace/tab makes each row
+# self-identifying and does more for "which agent am I looking at" than the
+# highlight contrast does; the agent name is demoted to a dim second line.
+# Matches the "Graphite, spacious (2a)" mockup: two-line rows, row_gap 1.
+# row_gap measured on 0.7.5: 0 = packed tight, 1 = the mockup's spacing (and
+# what 0.7.3 rendered by default), 2 = noticeably too airy.
+# The free-text second-line tokens (agent / terminal_title_stripped / branch)
+# carry an EXPLICIT fg. Left to the theme they render in overlay0, which was too
+# dim to read on the active row's #3a3a3a. Inline styles are static (not
+# active/inactive aware), so ONE value has to work on both backgrounds:
+# #c4c4c4 = 6.52:1 active, 10.88:1 panel.
+# Ceiling: it must stay below BOTH line-1 colours — text (#e0e0e0, active rows)
+# and subtext0 (#d0d0d0, inactive rows) — or the secondary line outshines the
+# primary one. #d0d0d0 vs #c4c4c4 is only a 1.13:1 step, so don't raise this
+# further without raising subtext0 first.
+#
+# state_text is deliberately NOT overridden — it uses its semantic state colour,
+# and those are all legible on the active row already (green #42be65 4.76:1,
+# yellow #e0af68 5.69:1, red #f7768e 4.30:1, peach #ff9e64 5.59:1). Overriding
+# it flattened idle/working/blocked to one grey for no benefit.
+[ui.sidebar.agents]
+row_gap = 1
+rows = [
+  ["state_icon", "workspace"],
+  ["state_text", { token = "agent", fg = "#c4c4c4" }],
+]
+
+# Per-agent override. Every Claude pane reports agent = "claude", so the default
+# second line ("idle · claude") is the same on all ten rows and identifies
+# nothing. terminal_title_stripped is the title Claude Code sets on its pane —
+# i.e. what that agent is actually working on right now.
+# Line 1 stays the stable identity (workspace), line 2 becomes live activity.
+# Keeps the mockup's two-line rhythm rather than the docs' three-line example,
+# which would cost 40 lines across ten agents.
+# Agents that report no title simply render a shorter row — herdr drops rows
+# whose tokens are all empty (verified: non-git spaces render one line, not one
+# line plus a blank). Non-claude agents keep the default rows above.
+[ui.sidebar.agents.rows_by_agent]
+claude = [
+  ["state_icon", "workspace"],
+  ["state_text", { token = "terminal_title_stripped", fg = "#c4c4c4" }],
+]
+
+[ui.sidebar.spaces]
+row_gap = 1
+rows = [
+  ["state_icon", "workspace"],
+  # Same fix as the agent rows: on the active space the branch otherwise renders
+  # in mauve (3.43:1) or overlay0 (1.46:1) depending on state.
+  [{ token = "branch", fg = "#c4c4c4" }],
+]
+
+# Toast when a background agent changes state (e.g. Claude Code blocked on approval)
+[ui.toast]
+delivery = "herdr"
+delay_seconds = 1
+
+[ui.toast.herdr]
+position = "top-right"
+
+[ui.toast.clipboard]
+enabled = true
+position = "bottom-center"
+
+[ui.sound]
+enabled = false
+
+[session]
+# Claude Code panes resume their native sessions after a server restart
+resume_agents_on_restore = true
+
+[experimental]
+allow_nested = false
+# pane_history persists pane output to disk — left off deliberately (may capture secrets)
+pane_history = false
+
+[advanced]
+scrollback_limit_bytes = 52428800

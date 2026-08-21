@@ -23,3 +23,20 @@
 # the private pdjsh/claude-memory repo instead (a git repo rooted at ~/.claude/projects with
 # its own allowlist). Do not remove this line to "sync memory too".
 .claude/projects
+
+# herdr keeps its runtime state alongside config.toml in ~/.config/herdr: unix sockets,
+# a multi-megabyte server log, and per-machine session/plugin state. Only config.toml is
+# portable. Listing the rest here keeps a stray `chezmoi add ~/.config/herdr` from
+# committing a live socket or a machine's restored-workspace layout.
+.config/herdr/*.log
+.config/herdr/*.sock
+.config/herdr/.plugins.lock
+.config/herdr/release-notes.json
+.config/herdr/session.json
+
+# ~/Library/LaunchAgents is macOS-only. On Linux the git-refresh job would want a
+# systemd user timer instead, which does not exist yet — so the plist is simply
+# not part of the source state there.
+{{ if ne .chezmoi.os "darwin" }}
+Library
+{{ end }}
