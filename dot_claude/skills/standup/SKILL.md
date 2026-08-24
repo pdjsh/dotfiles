@@ -90,6 +90,25 @@ as twelve separate facts.
 
 **On the board** — Linear and calendar. What is assigned, what is scheduled.
 
+## Naming things
+
+**A bare identifier is never enough.** `SR-204`, `#2293`, `w8:p1` mean nothing on
+their own, and a briefing whose reader has to open Linear to find out what it is
+about has failed. Every first mention of a ticket, PR or pane carries a short
+gloss — four to eight words, in your own compression, not the full title:
+
+> `SR-204` — EtherFi severity recalibration
+> `stakingrewards#2293` — custodial rating profiles + nav cleanup
+> `w8:p1` — Sentio parallel backfills
+
+Later mentions in the same briefing can use the bare id. Prefer the shared
+paraphrase when a ticket, a branch, a pane and a PR are the same work — name the
+work once, then list the ids that point at it.
+
+Two things this is not: do not paste the full Linear or PR title verbatim (they
+are written for a tracker, not a sentence), and do not spend a line explaining
+something the gloss already covers.
+
 **Today's three** — your recommendation: at most three things, in order, each
 with a one-line reason drawn from the sections above. This is the only part of
 the briefing where you have an opinion, so make it a real one: pick the thing
@@ -103,11 +122,13 @@ Housekeeping (severity 4) belongs in a single trailing line, if at all.
 End with a numbered list of 3–5 concrete next actions, each mapped to how it
 would run:
 
+Each entry names what the work *is*, not just what it is called:
+
 ```
-1. Fix the red CI on api-gateway#11           → implement
-2. Review ledger#25 (review requested of you) → review
-3. Resolve the four conflicting ledger PRs    → plan first, they interact
-4. Land the 2 uncommitted files in api-gateway → implement
+1. api-gateway#11 red CI — retry-budget tests failing      → implement
+2. ledger#25 review requested — decimal rounding fix       → review
+3. LG-204 rate-limit rework — no branch, no PR yet          → brainstorm
+4. api-gateway: land the 2 uncommitted files               → implement
 ```
 
 Then stop and wait. When the user picks a number, hand off to that workflow skill
@@ -129,6 +150,8 @@ web page.
 - **Everything traceable.** Every claim comes from the collector, Linear, or the
   calendar. Never infer that something "probably needs attention".
 - **No raw dumps.** No JSON, no full PR lists, no per-commit changelogs.
+- **No bare identifiers.** See *Naming things* — every id gets a gloss on first
+  mention.
 - **Say what you could not see.** Missing `gh` auth, a stopped herdr server, an
   unreadable transcript — one line each under Notes. The collector's `errors`
   array is already that list.
