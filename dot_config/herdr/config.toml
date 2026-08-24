@@ -1,0 +1,342 @@
+# herdr configuration — agent harness (Claude Code)
+# Managed via chezmoi. tmux stays the general-purpose multiplexer;
+# herdr owns AI-agent workspaces. Never nest one inside the other.
+
+onboarding = false
+
+[theme]
+name = "tokyo-night"
+
+# Graphite palette (adapted from a downloaded design, corrected against the
+# real 0.7.3 schema — see notes below). tokyo-night above is the base only;
+# everything visible in the sidebar is overridden here.
+[theme.custom]
+# Sidebar/panel. #101014 is the mockup's sampled sidebar tone, sitting just above
+# Ghostty's #0b0b0d pane background (1.04:1 lift — subtle by design).
+panel_bg = "#101014"
+# ACTIVE ROW background. This — NOT accent, and NOT surface1 — is the token that
+# marks the active agent/space; accent only paints the tab badge and menu dot.
+# The design assigned this to surface1, which herdr never reads for it.
+# The mockup samples #262626 here, but that measures only 1.25:1 against
+# panel_bg — the same low-contrast problem this whole exercise started with.
+# #3a3a3a = 1.98:1: a deliberate, single-token deviation from the design.
+# Revert to "#262626" for pixel-exact mockup fidelity.
+surface_dim = "#3a3a3a"
+# Fallback for second-line tokens that carry no explicit fg. The design's value
+# was #525252 (2.43:1 on the panel, 1.46:1 on the active row — too dim to read);
+# lifted to 4.55:1 / 2.72:1.
+overlay0 = "#7c7c7c"
+# The branch token on the ACTIVE row picks up mauve, which in tokyo-night is
+# #bb9af7 — bright purple, straight through the graphite look. Neutralized and
+# kept in step with subtext0.
+mauve = "#d0d0d0"
+# Active row label (8.62:1 on the active background).
+text = "#e0e0e0"
+# Inactive row labels (line 1: the workspace name). 12.31:1 on the panel.
+# MUST stay brighter than the inline fg on line 2 below, or inactive rows render
+# their secondary line brighter than their primary one — which is what #8d8d8d
+# here against #b4b4b4 there used to do.
+subtext0 = "#d0d0d0"
+accent = "#42be65"
+# State icons in the sidebar (✓ idle, ✳ working) — the design's accent green.
+green = "#42be65"
+# Neutralize the blue token so no tokyo-night blue leaks into the graphite look.
+blue = "#e0e0e0"
+# NOTE: the source design also carried [ui.sidebar.agents]/[ui.sidebar.spaces]
+# with row_gap and rows keys. Those do not exist in herdr 0.7.3 (zero hits in the
+# binary) and unknown keys are silently ignored, so they were dropped rather than
+# left in looking effective. Vertical row padding is not configurable in 0.7.3.
+
+[terminal]
+# Empty = $SHELL (zsh). New panes/tabs/workspaces inherit the source pane's cwd.
+shell_mode = "auto"
+new_cwd = "follow"
+
+[update]
+channel = "stable"
+
+[keys]
+# Prefix: Ctrl+Space (keeps Ctrl+a free for tmux-over-SSH muscle memory). Ctrl+;
+# was the previous prefix — awkward to reach, and punctuation-with-modifiers is
+# the least reliable binding class per herdr's own docs; ctrl+space is neither.
+prefix = "ctrl+space"
+
+# Basics
+help = "prefix+?"
+settings = "prefix+shift+s"
+detach = "prefix+d"
+reload_config = "prefix+r"
+goto = "prefix+g"
+open_notification_target = "prefix+o"
+
+# Workspaces — direct alt chords, deliberately mirroring the agent bindings:
+#   alt+h / alt+l   previous / next workspace   (step, like alt+j/k for agents)
+#   alt+1..9        jump straight to workspace N
+#   alt+n new, alt+r rename, alt+w picker
+# The old prefix routes are kept alongside each one, so existing muscle memory
+# still works and this is not a hard cutover.
+#
+# alt+h/l rather than alt+j/k because j/k are the agent chords; ctrl+hjkl is
+# panes, so the system reads as: ctrl+hjkl = panes, alt+hjkl = sidebar
+# (j/k agents, h/l workspaces), alt+u/i = tabs.
+workspace_picker = ["alt+w", "prefix+s", "prefix+w"]
+new_workspace = ["alt+n", "prefix+shift+n"]
+rename_workspace = ["alt+r", "prefix+shift+w"]
+previous_workspace = ["alt+h", "prefix+("]
+next_workspace = ["alt+l", "prefix+)"]
+# Direct numeric jump to workspace N. This replaces the old [keys.indexed]
+# agents = "alt" block, which indexed AGENT rows — so a workspace with no running
+# agent was unreachable by number, and row numbers moved as agents came and went.
+# switch_workspace indexes workspaces themselves, in session order.
+switch_workspace = "alt+1..9"
+# Destructive, so it stays behind the prefix — no single-chord workspace deletion.
+close_workspace = "prefix+shift+d"
+
+# Agents. Stepping stays on the direct alt+j/k chords — unchanged, and still the
+# fastest way through the sidebar list. The numeric jump is the prefix route now
+# that bare alt+1..9 belongs to workspaces (see switch_workspace above).
+focus_agent = "prefix+alt+1..9"
+# j/k rather than ctrl+j/k because those are already the pane-focus chords.
+next_agent = "alt+j"
+previous_agent = "alt+k"
+
+# Worktrees (workspace-per-feature-branch). g for git; alt+g creates, alt+shift+g
+# opens an existing one. Removal stays prefix-only — it deletes a checkout.
+new_worktree = ["alt+g", "prefix+shift+g"]
+open_worktree = ["alt+shift+g", "prefix+alt+g"]
+remove_worktree = "prefix+alt+shift+g"
+
+# Tabs — direct alt chords, completing the sidebar/tab set:
+#   alt+u / alt+i   previous / next tab   (step, like alt+h/l for workspaces)
+#   alt+t           new tab
+# The prefix routes are kept alongside each one, so this is not a hard cutover.
+#
+# u/i rather than a shift-flavoured alt+shift+h/l because plain alt+letter is
+# herdr's most reliable direct binding class — its own default config warns that
+# "alt+..., cmd/super, and punctuation-with-modifiers may depend on your
+# terminal/tmux setup", and alt+shift+<digit> in particular rides on Ghostty's
+# kitty-keyboard encoding. u sits left of i, so the pair reads left/right the
+# way h/l does, one row up from the sidebar chords.
+#
+# Numeric jump stays on prefix+1..9: bare alt+1..9 is switch_workspace, and
+# alt+shift+1..9 is exactly the encoding-dependent class this scheme avoids.
+#
+# rename and close stay prefix-only — rare, and close_tab is destructive.
+new_tab = ["alt+t", "prefix+c"]
+rename_tab = "prefix+comma"
+previous_tab = ["alt+u", "prefix+p"]
+next_tab = ["alt+i", "prefix+n"]
+switch_tab = "prefix+1..9"
+close_tab = "prefix+shift+x"
+
+# Panes
+#   prefix+\     split right, prefix+Enter split down
+split_vertical = "prefix+backslash"
+split_horizontal = "prefix+enter"
+close_pane = "prefix+x"
+zoom = ["alt+z", "prefix+m"]
+rename_pane = "prefix+shift+p"
+edit_scrollback = "prefix+e"
+resize_mode = "prefix+shift+r"
+
+# Pane focus: direct ctrl+hjkl chords (no prefix)
+focus_pane_left = "ctrl+h"
+focus_pane_down = "ctrl+j"
+focus_pane_up = "ctrl+k"
+focus_pane_right = "ctrl+l"
+cycle_pane_next = "prefix+tab"
+cycle_pane_previous = "prefix+shift+tab"
+# Jump back to the previously focused pane — the pane-level equivalent of `cd -`.
+last_pane = "prefix+space"
+
+# Pane SWAP (move the pane itself) as the shift-flavoured mirror of the ctrl+hjkl
+# focus chords above. Supported since 0.8.0 and previously unbound, so rearranging
+# a split meant dragging its border with the mouse.
+swap_pane_left = "prefix+shift+h"
+swap_pane_down = "prefix+shift+j"
+swap_pane_up = "prefix+shift+k"
+swap_pane_right = "prefix+shift+l"
+
+# Keyboard scrollback selection. Previously unbound, which left the mouse as the
+# only way to select and copy pane output.
+copy_mode = "prefix+["
+
+toggle_sidebar = ["alt+b", "prefix+b"]
+
+# Navigate-mode movement
+navigate_workspace_up = "up"
+navigate_workspace_down = "down"
+navigate_pane_left = "h"
+navigate_pane_down = "j"
+navigate_pane_up = "k"
+navigate_pane_right = "l"
+
+# NOTE: the legacy [keys.indexed] block (agents = "alt") was removed here.
+# herdr's own docs say "Legacy indexed shortcut config is still parsed for
+# compatibility. Prefer switch_tab, switch_workspace, and focus_agent for new
+# configs" — and it would have collided with switch_workspace = "alt+1..9".
+
+# Custom command bindings. These must come last in [keys]: `[[keys.command]]` is
+# an array-of-tables, so any plain `key = value` written below it would be parsed
+# into the sub-table instead of into [keys].
+
+# daybook — the morning read: open loops on the left, what moved and what is
+# running on the right. `q` closes it.
+#
+# Routed through `herdr plugin pane open` rather than running the binary in a
+# `type = "popup"` directly, so the pane comes from the registered plugin: it
+# honours the manifest's size, respects enable/disable, and stays addressable by
+# `herdr plugin pane focus`. Running the binary here would need it on PATH, which
+# it deliberately is not — only the collector is.
+#
+# prefix+alt+d, not a bare alt+d: alt+d is readline's kill-word in every zsh pane,
+# and stealing it globally to save one keystroke is a bad trade. This also mirrors
+# the prefix+alt+g worktree shape above. `type = "shell"` because the command's
+# whole job is one detached socket call; herdr draws the popup itself.
+[[keys.command]]
+key = "prefix+alt+d"
+type = "shell"
+command = "herdr plugin pane open --plugin daybook --entrypoint brief"
+
+[worktrees]
+directory = "~/.herdr/worktrees"
+
+[ui]
+# Terminal is 380x97 (measured via `herdr pane edges`, NOT tput — the CLI has no
+# TTY and reports a bogus 80). At 380 cols the old 32-wide sidebar was 8% of the
+# screen; 60 is ~16%, leaving the agent pane 320 cols.
+#
+# IMPORTANT: session.json persists a runtime sidebar_width that OVERRIDES
+# sidebar_width here, and it is only flushed on shutdown — so raising
+# sidebar_width alone silently does nothing on a running session. sidebar_min_width
+# IS applied as a clamp at load, so the floor is what actually moves the sidebar
+# and what makes the width survive a restart. That is why min == width below.
+# To resize: change BOTH numbers. Collapsing (prefix+b) still works regardless.
+sidebar_width = 60
+sidebar_min_width = 60
+sidebar_max_width = 76
+accent = "#42be65"
+mouse_capture = true
+mouse_scroll_lines = 3
+confirm_close = true
+# Off: every tab in this session is the only tab in its workspace, and no tab has
+# ever been given a custom name. With hide_tab_bar_when_single_tab below, a tab
+# name is not even rendered in the common case. prefix+c now opens a tab
+# immediately; rename_tab (prefix+comma) stays bound for the rare second tab.
+prompt_new_tab_name = false
+# Workspaces are the opposite case — those names ARE used and are always visible
+# in the sidebar, so they keep the prompt. Without it a new workspace is
+# auto-named from its cwd and has to be renamed afterwards — which was being
+# done by clicking the sidebar row.
+prompt_new_workspace_name = true
+show_agent_labels_on_pane_borders = true
+# "priority" (attention queue) reshuffles rows whenever an agent changes state,
+# which makes both alt+j/k and the alt+1..9 jumps aim at a moving target — row 3
+# is a different agent thirty seconds later. "spaces" groups by space and holds
+# that order stable, so a row's position is muscle memory. Only two values exist
+# (0.7.5); "workspaces" is an alias for "spaces".
+#
+# Row order under "spaces" is the order of the `workspaces` array in session.json,
+# i.e. workspace creation order.
+#
+# CORRECTION (0.8.0): the note that used to sit here said the order could not be
+# changed — "no keybinding, no socket API". The keybinding part is still true, but
+# the socket API now exposes `workspace.move { workspace_id, insert_index }` and
+# `workspace.move_block`, both verified present on 0.8.0. There is still no CLI
+# subcommand for it (`herdr workspace` offers only list/create/get/focus/rename/
+# report-metadata/close), so reordering has to go through the socket — which is
+# what the `workspace-order` plugin in pdjsh/herdr-plugins does.
+agent_panel_sort = "spaces"
+# 12 of 13 workspaces have exactly one tab — reclaims a row of vertical space on
+# nearly every workspace. New tabs still work via prefix+c; the bar reappears.
+hide_tab_bar_when_single_tab = true
+
+# Sidebar row layouts (herdr 0.7.5+; these keys do NOT exist in 0.7.3 and were
+# silently ignored there). row_gap defaults to 0 — the 1 below is the vertical
+# padding between entries.
+#
+# The agent token renders the *detected agent name*, which is "claude" for every
+# pane here — useless as an identifier. Leading with workspace/tab makes each row
+# self-identifying and does more for "which agent am I looking at" than the
+# highlight contrast does; the agent name is demoted to a dim second line.
+# Matches the "Graphite, spacious (2a)" mockup: two-line rows, row_gap 1.
+# row_gap measured on 0.7.5: 0 = packed tight, 1 = the mockup's spacing (and
+# what 0.7.3 rendered by default), 2 = noticeably too airy.
+# The free-text second-line tokens (agent / terminal_title_stripped / branch)
+# carry an EXPLICIT fg. Left to the theme they render in overlay0, which was too
+# dim to read on the active row's #3a3a3a. Inline styles are static (not
+# active/inactive aware), so ONE value has to work on both backgrounds:
+# #c4c4c4 = 6.52:1 active, 10.88:1 panel.
+# Ceiling: it must stay below BOTH line-1 colours — text (#e0e0e0, active rows)
+# and subtext0 (#d0d0d0, inactive rows) — or the secondary line outshines the
+# primary one. #d0d0d0 vs #c4c4c4 is only a 1.13:1 step, so don't raise this
+# further without raising subtext0 first.
+#
+# state_text is deliberately NOT overridden — it uses its semantic state colour,
+# and those are all legible on the active row already (green #42be65 4.76:1,
+# yellow #e0af68 5.69:1, red #f7768e 4.30:1, peach #ff9e64 5.59:1). Overriding
+# it flattened idle/working/blocked to one grey for no benefit.
+[ui.sidebar.agents]
+row_gap = 1
+rows = [
+  ["state_icon", "workspace"],
+  ["state_text", { token = "agent", fg = "#c4c4c4" }],
+]
+
+# Per-agent override. Every Claude pane reports agent = "claude", so the default
+# second line ("idle · claude") is the same on all ten rows and identifies
+# nothing. terminal_title_stripped is the title Claude Code sets on its pane —
+# i.e. what that agent is actually working on right now.
+# Line 1 stays the stable identity (workspace), line 2 becomes live activity.
+# Keeps the mockup's two-line rhythm rather than the docs' three-line example,
+# which would cost 40 lines across ten agents.
+# Agents that report no title simply render a shorter row — herdr drops rows
+# whose tokens are all empty (verified: non-git spaces render one line, not one
+# line plus a blank). Non-claude agents keep the default rows above.
+[ui.sidebar.agents.rows_by_agent]
+claude = [
+  ["state_icon", "workspace"],
+  ["state_text", { token = "terminal_title_stripped", fg = "#c4c4c4" }],
+]
+
+[ui.sidebar.spaces]
+row_gap = 1
+rows = [
+  ["state_icon", "workspace"],
+  # Same fix as the agent rows: on the active space the branch otherwise renders
+  # in mauve (3.43:1) or overlay0 (1.46:1) depending on state.
+  [{ token = "branch", fg = "#c4c4c4" }],
+]
+
+# Notify when a background agent changes state (e.g. Claude Code blocked on approval).
+# "system" hands these to the OS notification service rather than drawing an in-app
+# toast. Reason: in-app toasts have no timeout and no dismiss keybinding — the only
+# way herdr clears one is open_notification_target, which jumps to the notification's
+# source. Messages with no source to jump to (e.g. hitting alt+g outside a git tree)
+# therefore stick on screen indefinitely. OS notifications auto-expire instead.
+[ui.toast]
+delivery = "system"
+delay_seconds = 1
+
+# Inert while delivery = "system"; only applies to in-app ("herdr") toasts.
+[ui.toast.herdr]
+position = "top-right"
+
+[ui.toast.clipboard]
+enabled = true
+position = "bottom-center"
+
+[ui.sound]
+enabled = false
+
+[session]
+# Claude Code panes resume their native sessions after a server restart
+resume_agents_on_restore = true
+
+[experimental]
+allow_nested = false
+# pane_history persists pane output to disk — left off deliberately (may capture secrets)
+pane_history = false
+
+[advanced]
+scrollback_limit_bytes = 52428800
