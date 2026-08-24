@@ -56,8 +56,10 @@ new_cwd = "follow"
 channel = "stable"
 
 [keys]
-# Prefix: Ctrl+; (keeps Ctrl+a free for tmux-over-SSH muscle memory)
-prefix = "ctrl+semicolon"
+# Prefix: Ctrl+Space (keeps Ctrl+a free for tmux-over-SSH muscle memory). Ctrl+;
+# was the previous prefix — awkward to reach, and punctuation-with-modifiers is
+# the least reliable binding class per herdr's own docs; ctrl+space is neither.
+prefix = "ctrl+space"
 
 # Basics
 help = "prefix+?"
@@ -67,35 +69,63 @@ reload_config = "prefix+r"
 goto = "prefix+g"
 open_notification_target = "prefix+o"
 
-# Workspaces
-#   prefix+w       workspace picker
-#   prefix+shift+n new workspace, prefix+shift+w rename, prefix+shift+d close
-#   prefix+( / )   previous / next workspace
-workspace_picker = ["prefix+s", "prefix+w"]
-new_workspace = "prefix+shift+n"
-rename_workspace = "prefix+shift+w"
+# Workspaces — direct alt chords, deliberately mirroring the agent bindings:
+#   alt+h / alt+l   previous / next workspace   (step, like alt+j/k for agents)
+#   alt+1..9        jump straight to workspace N
+#   alt+n new, alt+r rename, alt+w picker
+# The old prefix routes are kept alongside each one, so existing muscle memory
+# still works and this is not a hard cutover.
+#
+# alt+h/l rather than alt+j/k because j/k are the agent chords; ctrl+hjkl is
+# panes, so the system reads as: ctrl+hjkl = panes, alt+hjkl = sidebar
+# (j/k agents, h/l workspaces), alt+u/i = tabs.
+workspace_picker = ["alt+w", "prefix+s", "prefix+w"]
+new_workspace = ["alt+n", "prefix+shift+n"]
+rename_workspace = ["alt+r", "prefix+shift+w"]
+previous_workspace = ["alt+h", "prefix+("]
+next_workspace = ["alt+l", "prefix+)"]
+# Direct numeric jump to workspace N. This replaces the old [keys.indexed]
+# agents = "alt" block, which indexed AGENT rows — so a workspace with no running
+# agent was unreachable by number, and row numbers moved as agents came and went.
+# switch_workspace indexes workspaces themselves, in session order.
+switch_workspace = "alt+1..9"
+# Destructive, so it stays behind the prefix — no single-chord workspace deletion.
 close_workspace = "prefix+shift+d"
-previous_workspace = "prefix+("
-next_workspace = "prefix+)"
 
-# Agents: jump straight to agent N from anywhere
+# Agents. Stepping stays on the direct alt+j/k chords — unchanged, and still the
+# fastest way through the sidebar list. The numeric jump is the prefix route now
+# that bare alt+1..9 belongs to workspaces (see switch_workspace above).
 focus_agent = "prefix+alt+1..9"
-# Direct (no-prefix) step through the sidebar agent list, in the same alt+
-# namespace as the alt+1..9 jumps below. j/k rather than ctrl+j/k because those
-# are already the pane-focus chords.
+# j/k rather than ctrl+j/k because those are already the pane-focus chords.
 next_agent = "alt+j"
 previous_agent = "alt+k"
 
-# Worktrees (workspace-per-feature-branch)
-new_worktree = "prefix+shift+g"
-open_worktree = "prefix+alt+g"
+# Worktrees (workspace-per-feature-branch). g for git; alt+g creates, alt+shift+g
+# opens an existing one. Removal stays prefix-only — it deletes a checkout.
+new_worktree = ["alt+g", "prefix+shift+g"]
+open_worktree = ["alt+shift+g", "prefix+alt+g"]
 remove_worktree = "prefix+alt+shift+g"
 
-# Tabs
-new_tab = "prefix+c"
+# Tabs — direct alt chords, completing the sidebar/tab set:
+#   alt+u / alt+i   previous / next tab   (step, like alt+h/l for workspaces)
+#   alt+t           new tab
+# The prefix routes are kept alongside each one, so this is not a hard cutover.
+#
+# u/i rather than a shift-flavoured alt+shift+h/l because plain alt+letter is
+# herdr's most reliable direct binding class — its own default config warns that
+# "alt+..., cmd/super, and punctuation-with-modifiers may depend on your
+# terminal/tmux setup", and alt+shift+<digit> in particular rides on Ghostty's
+# kitty-keyboard encoding. u sits left of i, so the pair reads left/right the
+# way h/l does, one row up from the sidebar chords.
+#
+# Numeric jump stays on prefix+1..9: bare alt+1..9 is switch_workspace, and
+# alt+shift+1..9 is exactly the encoding-dependent class this scheme avoids.
+#
+# rename and close stay prefix-only — rare, and close_tab is destructive.
+new_tab = ["alt+t", "prefix+c"]
 rename_tab = "prefix+comma"
-previous_tab = "prefix+p"
-next_tab = "prefix+n"
+previous_tab = ["alt+u", "prefix+p"]
+next_tab = ["alt+i", "prefix+n"]
 switch_tab = "prefix+1..9"
 close_tab = "prefix+shift+x"
 
@@ -104,7 +134,7 @@ close_tab = "prefix+shift+x"
 split_vertical = "prefix+backslash"
 split_horizontal = "prefix+enter"
 close_pane = "prefix+x"
-zoom = "prefix+m"
+zoom = ["alt+z", "prefix+m"]
 rename_pane = "prefix+shift+p"
 edit_scrollback = "prefix+e"
 resize_mode = "prefix+shift+r"
@@ -116,8 +146,22 @@ focus_pane_up = "ctrl+k"
 focus_pane_right = "ctrl+l"
 cycle_pane_next = "prefix+tab"
 cycle_pane_previous = "prefix+shift+tab"
+# Jump back to the previously focused pane — the pane-level equivalent of `cd -`.
+last_pane = "prefix+space"
 
-toggle_sidebar = "prefix+b"
+# Pane SWAP (move the pane itself) as the shift-flavoured mirror of the ctrl+hjkl
+# focus chords above. Supported since 0.8.0 and previously unbound, so rearranging
+# a split meant dragging its border with the mouse.
+swap_pane_left = "prefix+shift+h"
+swap_pane_down = "prefix+shift+j"
+swap_pane_up = "prefix+shift+k"
+swap_pane_right = "prefix+shift+l"
+
+# Keyboard scrollback selection. Previously unbound, which left the mouse as the
+# only way to select and copy pane output.
+copy_mode = "prefix+["
+
+toggle_sidebar = ["alt+b", "prefix+b"]
 
 # Navigate-mode movement
 navigate_workspace_up = "up"
@@ -127,11 +171,32 @@ navigate_pane_down = "j"
 navigate_pane_up = "k"
 navigate_pane_right = "l"
 
-# Direct (no-prefix) agent jump: Alt+1..9 focuses agent N in sidebar order.
-# One agent per workspace is the usual layout here, so this doubles as
-# workspace switching without the prefix.
-[keys.indexed]
-agents = "alt"
+# NOTE: the legacy [keys.indexed] block (agents = "alt") was removed here.
+# herdr's own docs say "Legacy indexed shortcut config is still parsed for
+# compatibility. Prefer switch_tab, switch_workspace, and focus_agent for new
+# configs" — and it would have collided with switch_workspace = "alt+1..9".
+
+# Custom command bindings. These must come last in [keys]: `[[keys.command]]` is
+# an array-of-tables, so any plain `key = value` written below it would be parsed
+# into the sub-table instead of into [keys].
+
+# daybook — the morning read: open loops on the left, what moved and what is
+# running on the right. `q` closes it.
+#
+# Routed through `herdr plugin pane open` rather than running the binary in a
+# `type = "popup"` directly, so the pane comes from the registered plugin: it
+# honours the manifest's size, respects enable/disable, and stays addressable by
+# `herdr plugin pane focus`. Running the binary here would need it on PATH, which
+# it deliberately is not — only the collector is.
+#
+# prefix+alt+d, not a bare alt+d: alt+d is readline's kill-word in every zsh pane,
+# and stealing it globally to save one keystroke is a bad trade. This also mirrors
+# the prefix+alt+g worktree shape above. `type = "shell"` because the command's
+# whole job is one detached socket call; herdr draws the popup itself.
+[[keys.command]]
+key = "prefix+alt+d"
+type = "shell"
+command = "herdr plugin pane open --plugin daybook --entrypoint brief"
 
 [worktrees]
 directory = "~/.herdr/worktrees"
@@ -154,7 +219,16 @@ accent = "#42be65"
 mouse_capture = true
 mouse_scroll_lines = 3
 confirm_close = true
-prompt_new_tab_name = true
+# Off: every tab in this session is the only tab in its workspace, and no tab has
+# ever been given a custom name. With hide_tab_bar_when_single_tab below, a tab
+# name is not even rendered in the common case. prefix+c now opens a tab
+# immediately; rename_tab (prefix+comma) stays bound for the rare second tab.
+prompt_new_tab_name = false
+# Workspaces are the opposite case — those names ARE used and are always visible
+# in the sidebar, so they keep the prompt. Without it a new workspace is
+# auto-named from its cwd and has to be renamed afterwards — which was being
+# done by clicking the sidebar row.
+prompt_new_workspace_name = true
 show_agent_labels_on_pane_borders = true
 # "priority" (attention queue) reshuffles rows whenever an agent changes state,
 # which makes both alt+j/k and the alt+1..9 jumps aim at a moving target — row 3
@@ -162,10 +236,16 @@ show_agent_labels_on_pane_borders = true
 # that order stable, so a row's position is muscle memory. Only two values exist
 # (0.7.5); "workspaces" is an alias for "spaces".
 #
-# Row order under "spaces" is the order of the `workspaces` array in
-# session.json, i.e. workspace creation order. 0.7.5 cannot reorder it — no
-# keybinding, no socket API — so treat the order as fixed and let new
-# workspaces land at the bottom.
+# Row order under "spaces" is the order of the `workspaces` array in session.json,
+# i.e. workspace creation order.
+#
+# CORRECTION (0.8.0): the note that used to sit here said the order could not be
+# changed — "no keybinding, no socket API". The keybinding part is still true, but
+# the socket API now exposes `workspace.move { workspace_id, insert_index }` and
+# `workspace.move_block`, both verified present on 0.8.0. There is still no CLI
+# subcommand for it (`herdr workspace` offers only list/create/get/focus/rename/
+# report-metadata/close), so reordering has to go through the socket — which is
+# what the `workspace-order` plugin in pdjsh/herdr-plugins does.
 agent_panel_sort = "spaces"
 # 12 of 13 workspaces have exactly one tab — reclaims a row of vertical space on
 # nearly every workspace. New tabs still work via prefix+c; the bar reappears.
@@ -228,11 +308,17 @@ rows = [
   [{ token = "branch", fg = "#c4c4c4" }],
 ]
 
-# Toast when a background agent changes state (e.g. Claude Code blocked on approval)
+# Notify when a background agent changes state (e.g. Claude Code blocked on approval).
+# "system" hands these to the OS notification service rather than drawing an in-app
+# toast. Reason: in-app toasts have no timeout and no dismiss keybinding — the only
+# way herdr clears one is open_notification_target, which jumps to the notification's
+# source. Messages with no source to jump to (e.g. hitting alt+g outside a git tree)
+# therefore stick on screen indefinitely. OS notifications auto-expire instead.
 [ui.toast]
-delivery = "herdr"
+delivery = "system"
 delay_seconds = 1
 
+# Inert while delivery = "system"; only applies to in-app ("herdr") toasts.
 [ui.toast.herdr]
 position = "top-right"
 
