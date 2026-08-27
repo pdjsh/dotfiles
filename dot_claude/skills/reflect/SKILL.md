@@ -15,9 +15,11 @@ Walk these before proposing anything:
    - Patterns of correction (user said "don't do X" multiple times)
    - Patterns of friction (same permission prompt repeated, same skill failing to trigger)
    - Surprising approvals (user liked an unusual approach — worth preserving)
-2. **Auto-memory entries** — `~/.claude/projects/*/memory/`. Read every file.
+2. **Auto-memory entries** — `~/.claude/projects/*/memory/`. Read every file, in every project — not just the one you're sitting in.
    - Which feedback has fired repeatedly? That's a candidate for promotion.
    - Which memory is stale, contradicted by newer feedback, or duplicated?
+   - **Scope check — do this every time.** Auto-memory is keyed by working directory: a file under `projects/<sanitized-cwd>/memory/` loads *only* when the session's cwd matches that project (unless `autoMemoryDirectory` is set in settings.json to a shared path). So a general preference written while sitting in one repo is invisible everywhere else. For each memory ask: **is this advice general, and is it parked in a scope where it will never load?** If yes, it belongs in CLAUDE.md or a skill — both load everywhere — not in a project's memory dir.
+   - **The tell:** the same correction recurring in transcripts *after* a memory was written to prevent it, in a different project. Grep the transcripts for the behaviour, then compare the dates against the memory's `modified` field and the cwd it lives under. A user saying "again" or "I already told you" is this failure until proven otherwise.
 3. **Global CLAUDE.md** — `~/.claude/CLAUDE.md`.
    - Does it miss something that came up repeatedly?
    - Is anything in it wrong, stale, or superseded?
@@ -84,6 +86,8 @@ Walk through the list with the user. Apply only what they approve, one at a time
 
 - **Don't propose from a single incident** unless it was costly or high-risk.
 - **Don't rewrite memories without asking.**
+- **Verify before retiring.** Never retire a memory as "covered elsewhere" on recall — open the file you claim covers it and confirm the content is actually there. Cite the file and line in the proposal so the user can check too.
+- **Prefer archive over delete.** Retiring means moving the file out of the memory dir (e.g. `~/.claude/.memory-retired-YYYY-MM-DD/`), not `rm`. Memories carry provenance — dates, quoted complaints — that the promoted rule usually drops.
 - **Don't invent patterns.** If the data is thin: "Only 2 sessions since last reflection — not much to propose."
 - **Always show evidence.** "Why" must cite concrete instances (dates, session context, count).
 - **Keep the proposal scannable.** If it's longer than 10 items, group by category or triage the least-important to a "deferred" section.
