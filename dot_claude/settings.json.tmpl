@@ -157,14 +157,41 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{ .chezmoi.homeDir }}/.claude/hooks/ledger-context.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{ .chezmoi.homeDir }}/.claude/hooks/ledger-stop.sh",
+            "timeout": 10
+          }
+        ]
       }
     ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "{{ .chezmoi.homeDir }}/.claude/statusline.sh",
+    "padding": 0
   },
   "effortLevel": "xhigh",
   "tui": "fullscreen",
   "skipWorkflowUsageWarning": true,
   "theme": "dark",
   "editorMode": "vim",
+  "autoCompactEnabled": true,
   "skipAutoPermissionPrompt": true,
   "autoMode": {
     "allow": [
@@ -188,5 +215,6 @@
       "Commands that delete or rename many files (rm -r on non-trivial paths, find with -delete/-exec rm, xargs rm) require approval, regardless of path.",
       "Writing, editing, or creating files outside the project root (home directory dotfiles, /etc, system paths) requires approval. The read-only exception above covers reads of external paths, never writes."
     ]
-  }
+  },
+  "outputStyle": "Concise"
 }

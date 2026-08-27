@@ -7,6 +7,20 @@ description: Use after implementation is complete, before the user commits, merg
 
 Implementation is done. Before the work reaches the user (as a PR or a commit they'll push), do a structured review pass. The review's job is to catch anything the user would otherwise have to catch — so they can skim rather than dig.
 
+## Pass 0: reconcile the ledger
+
+Start from `ledger show`, not from the diff. It is the claim; the diff is the
+evidence. Walk them against each other:
+
+- **Every `done` task is actually done.** Open what its evidence points at. A task
+  marked done whose evidence doesn't hold is the single most expensive thing this
+  review can catch — it is the one failure the user cannot see for themselves.
+- **Everything in the diff is on the ledger.** Anything else is scope creep: add it
+  as a task after the fact so the record is honest, and flag it in the punch list.
+- **Nothing is left in progress.** Close it, block it with a reason, or drop it
+  with a reason.
+- **Surfaced items are still surfaced** — not quietly fixed, not quietly gone.
+
 ## Pass 1: self-review
 
 Re-read the full diff as if you didn't write it.
@@ -70,10 +84,11 @@ Hand the user a walkable punch list. Example:
 - Approve or request changes on the PR
 ```
 
-For autonomous flows, this punch list goes into the PR description, not a chat message. The user sees it when they open the PR.
+For autonomous flows, this punch list goes into the PR description, not a chat message. The user sees it when they open the PR — under the `ledger wrap` block, which supplies the *what happened* the punch list assumes.
 
 ## Rules
 
 - **Never commit, merge, or close for the user** — review produces findings; the user acts on them.
 - **Blockers must actually block.** If something is a blocker, say so clearly. If it's a nit, call it a nit — don't conflate.
 - **Silence is bad.** "No findings" is a valid report; no report is not.
+- **Review closes the ledger.** The last thing this skill does is `ledger wrap` — the wrap-up block goes at the top of the PR description, the punch list under it.

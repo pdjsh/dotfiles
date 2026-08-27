@@ -11,7 +11,7 @@ The problem is understood. Now produce a plan the user can approve, redirect, or
 
 1. **Goal** — one sentence restating what we're building.
 2. **Approach** — the strategy, named at a high level (e.g., "add a middleware that X", not pseudocode).
-3. **Steps** — ordered. Each step names the file(s) touched and what specifically changes. Group related edits into one step; don't fragment.
+3. **Steps** — ordered. Each step names the file(s) touched and what specifically changes. Group related edits into one step; don't fragment. Each step must be sized to one sitting (~30 min, rarely more than three files) and must name an end state you could check — because these steps become the ledger's tasks verbatim.
 4. **Data / schema changes** — if any. Migration file, type regen, RLS policy updates.
 5. **Risks / unknowns** — what could go wrong, what you're unsure about. Be honest about thin spots.
 6. **Out of scope** — things explicitly NOT in this change. Write these down so scope creep is visible.
@@ -24,6 +24,7 @@ The problem is understood. Now produce a plan the user can approve, redirect, or
 - **Flag the one load-bearing risk.** If something might break in a non-obvious way, put it under Risks, not buried in a step.
 - **Name concrete files, concrete commands.** "Update config" is vague. `supabase/migrations/20260420_add_foo.sql` is concrete.
 - **Respect CLAUDE.md conventions.** Don't propose npm if the repo uses pnpm. Don't propose a new dep if an existing one works.
+- **First step proves the approach, last step is verification.** Lead with the risky unknown — the migration that either applies or doesn't, the API whose shape you're guessing at — not the easy scaffolding. End with tests + review, never with "cleanup".
 
 ## Ask for approval
 
@@ -34,6 +35,21 @@ End the plan with an explicit ask. Examples:
 > If this looks right, I'll move to implement.
 
 Don't assume the user has approved just because they replied — look for a clear go-ahead.
+
+## The plan becomes the ledger
+
+The plan's steps *are* the ledger's tasks — same words, same order. Creating it is
+the last act of planning, once the user has approved (or immediately, when they
+have handed off autonomy):
+
+```sh
+ledger new "<goal>" -t "<step 1>" -t "<step 2>" -t "…"
+```
+
+This is what makes a plan checkable *while* it runs instead of only at the end. It
+is also a test of the plan: a step too vague to become a task — no verb, no end
+state anyone could check — was too vague to be a plan step. Fix it here, where it
+costs a sentence, not two hours in. The `ledger` skill has the breakdown rules.
 
 ## After approval
 
