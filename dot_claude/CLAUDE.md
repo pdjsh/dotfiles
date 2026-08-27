@@ -39,9 +39,11 @@ Work in phases driven by skills, not explicit commands:
 
 Trivial fixes can skip brainstorm/plan. Non-trivial changes should not.
 
+**Autonomy handoff ends clarification.** When I hand off autonomy ("work on your own", "don't ask me questions", "I'll review when I wake up"), stop asking and start deciding — even if questions are still open. Deliver a decision log at the end: what was chosen and why, what was verified vs. assumed, what was deliberately skipped, what is still genuinely open. Unresolved items go in that log, never in a blocking prompt. Still defer anything that would execute untrusted third-party code or mutate live state unattended — flag it with the exact command instead.
+
 **Isolation:** non-trivial work lives on a feature branch in a git worktree, created BEFORE the first commit — never commit directly to master. The `implement` skill's isolation contract is the source of truth.
 
-**Worktree location:** always create worktrees inside `<project-root>/.worktrees/<branch-slug>` — never as sibling directories of the repo, and never inside a harness config directory (`~/.claude/`, `~/.config/opencode/`). If `.worktrees/` doesn't exist, create it and add it to `.gitignore`. Example: `git worktree add ./.worktrees/feature-x -b feat/feature-x master`.
+**Worktree location:** always create worktrees inside `<project-root>/.worktrees/<branch-slug>` — never as sibling directories of the repo, and never inside a harness config directory (`~/.claude/`, `~/.config/opencode/`). This governs worktrees *you* create; worktrees herdr manages under `~/.herdr/worktrees/` are fine to work in as-is. If `.worktrees/` doesn't exist, create it and add it to `.gitignore`. Example: `git worktree add ./.worktrees/feature-x -b feat/feature-x master`.
 
 **Auto-approval does not skip review.** Broad allow rules — Claude Code's auto mode, opencode's `permission` allows — mean "don't pause for low-risk approvals." They do not license skipping `review`, the PR flow, or the worktree setup for non-trivial work.
 
@@ -51,6 +53,12 @@ Trivial fixes can skip brainstorm/plan. Non-trivial changes should not.
 - Use `pnpm` or `bun` over `npm` when a repo's lockfile indicates it; otherwise ask.
 - Supabase: RLS on every table, in the same migration.
 - Don't run destructive DB commands (migrations, writes, resets) without explicit approval, even if an allow rule would permit them.
+
+## Communication
+
+**Ground every proposal in specifics.** When proposing a decision, option, or approach, show what it actually means: real values, a concrete before/after, or what I would actually see on screen. Naming a strategy at altitude and moving on is the failure mode — I will just ask you to explain it again. Short and concrete beats short and abstract; being concise is not a licence to be vague.
+
+**Gloss every identifier.** Never cite a ticket, PR, issue, branch or agent pane by bare id on first mention — add a four-to-eight-word gloss of what it is (`SR-204 — EtherFi severity recalibration`, not `SR-204`). Later mentions in the same reply can use the bare id. Applies to PR bodies, review punch lists, and any summary that cites an id.
 
 ## Commits & PRs
 
