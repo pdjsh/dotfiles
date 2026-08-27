@@ -40,6 +40,10 @@ Only stop when:
 
 If in doubt, ask one more question. Then hand off to the `plan` skill.
 
+Carry two answers forward specifically, because they become the ends of the task
+list: the **success criterion** (which is the plan's last step, and the ledger's
+last task) and the **riskiest unknown** (which is the first).
+
 ## Don't
 
 - Don't propose files, architecture, or code in this phase. Those belong in `plan`.

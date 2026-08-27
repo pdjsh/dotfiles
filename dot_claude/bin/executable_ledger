@@ -1,0 +1,1072 @@
+#!/usr/bin/env python3
+"""ledger — persistent task ledgers for AI-agent runs.
+
+One markdown file per unit of work, living in ~/.claude/ledgers/. The agent keeps
+it current as it works; the human reads it to know what already happened, what is
+happening right now, and what is still left. Stdlib only, no deps.
+
+Layout of a ledger file:
+
+    ---
+    id: 2026-08-27-rework-agent-tracking
+    goal: Rework how agent work is tracked
+    status: active
+    ...
+    ---
+
+    # Rework how agent work is tracked
+
+    ## Tasks
+
+    - [x] 1 · Inventory the existing harness
+          @started 2026-08-27T17:02:11Z
+          @done 2026-08-27T17:14:40Z
+          -> 7 skills, 4 hooks; all of ~/.claude is chezmoi-managed
+    - [~] 2 · Write the ledger CLI
+          @started 2026-08-27T17:20:00Z
+      - [x] 2.1 · file format + parser
+      - [ ] 2.2 · render + list
+    - [ ] 3 · Wire the hooks
+    - [!] 4 · Status line
+          @blocked 2026-08-27T18:02:00Z needs a call on replacing the default line
+    - [-] 5 · Port the daybook collector
+          @dropped 2026-08-27T18:04:00Z cross-repo change, separate PR
+
+    ## Decisions
+    ## Surfaced
+    ## Links
+    ## Wrap-up
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+# --------------------------------------------------------------------------- #
+# constants
+# --------------------------------------------------------------------------- #
+
+LEDGER_DIR = Path(os.environ.get("LEDGER_DIR") or (Path.home() / ".claude" / "ledgers"))
+BINDINGS = LEDGER_DIR / ".bindings.json"
+
+# How long a task may sit in `doing` without any update before the Stop hook
+# nudges. This is the "heartbeat" — the agent must report progress at least this
+# often, which is what keeps a long run legible.
+HEARTBEAT_MIN = int(os.environ.get("LEDGER_HEARTBEAT_MIN") or 20)
+# Above this many top-level tasks a ledger has stopped being a list and started
+# being a project. Split it.
+MAX_TASKS = int(os.environ.get("LEDGER_MAX_TASKS") or 12)
+
+TODO, DOING, DONE, BLOCKED, DROPPED = "todo", "doing", "done", "blocked", "dropped"
+MARK = {TODO: " ", DOING: "~", DONE: "x", BLOCKED: "!", DROPPED: "-"}
+STATE_OF = {v: k for k, v in MARK.items()}
+GLYPH = {TODO: "☐", DOING: "▸", DONE: "✓", BLOCKED: "⚠", DROPPED: "–"}
+OPEN_STATES = (TODO, DOING, BLOCKED)
+
+SECTIONS = ["Tasks", "Decisions", "Surfaced", "Links", "Wrap-up"]
+
+TASK_RE = re.compile(r"^(?P<indent>\s*)- \[(?P<mark>.)\] (?P<num>[\d.]+)\s*·\s*(?P<text>.*)$")
+META_RE = re.compile(r"^\s*@(?P<key>\w+)\s+(?P<stamp>\S+)(?:\s+(?P<rest>.*))?$")
+NOTE_RE = re.compile(r"^\s*->\s?(?P<text>.*)$")
+
+C = {
+    "reset": "\033[0m", "dim": "\033[2m", "bold": "\033[1m",
+    "green": "\033[32m", "yellow": "\033[33m", "red": "\033[31m",
+    "blue": "\033[34m", "cyan": "\033[36m", "grey": "\033[90m",
+}
+STATE_COLOR = {TODO: "grey", DOING: "cyan", DONE: "green", BLOCKED: "yellow", DROPPED: "grey"}
+
+
+def paint(s: str, *styles: str) -> str:
+    if not USE_COLOR:
+        return s
+    return "".join(C[x] for x in styles if x in C) + s + C["reset"]
+
+
+USE_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+
+
+# --------------------------------------------------------------------------- #
+# time helpers
+# --------------------------------------------------------------------------- #
+
+def now() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def iso(t: dt.datetime | None = None) -> str:
+    return (t or now()).astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_iso(s: str) -> dt.datetime | None:
+    try:
+        return dt.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
+def local(s: str, fmt: str = "%H:%M") -> str:
+    t = parse_iso(s)
+    return t.astimezone().strftime(fmt) if t else "?"
+
+
+def ago(s: str) -> str:
+    t = parse_iso(s)
+    if not t:
+        return "?"
+    return dur((now() - t).total_seconds())
+
+
+def since(s: str) -> str:
+    """`ago()` with the trailing preposition, so "just now ago" never happens."""
+    a = ago(s)
+    return a if a in ("just now", "?") else f"{a} ago"
+
+
+def dur(seconds: float) -> str:
+    m = int(seconds // 60)
+    if m < 1:
+        return "just now"
+    if m < 60:
+        return f"{m}m"
+    h, m = divmod(m, 60)
+    if h < 24:
+        return f"{h}h{m:02d}m" if m else f"{h}h"
+    d, h = divmod(h, 24)
+    return f"{d}d{h}h" if h else f"{d}d"
+
+
+# --------------------------------------------------------------------------- #
+# model
+# --------------------------------------------------------------------------- #
+
+class Task:
+    def __init__(self, num: str, state: str, text: str):
+        self.num = num
+        self.state = state
+        self.text = text
+        self.meta: list[tuple[str, str, str]] = []   # (key, stamp, rest)
+        self.notes: list[str] = []
+        self.subs: list["Task"] = []
+
+    # -- meta accessors ----------------------------------------------------- #
+    def get(self, key: str) -> tuple[str, str] | None:
+        for k, stamp, rest in self.meta:
+            if k == key:
+                return stamp, rest
+        return None
+
+    def set(self, key: str, rest: str = "", stamp: str | None = None) -> None:
+        self.meta = [m for m in self.meta if m[0] != key]
+        self.meta.append((key, stamp or iso(), rest))
+
+    def unset(self, key: str) -> None:
+        self.meta = [m for m in self.meta if m[0] != key]
+
+    @property
+    def touched(self) -> str:
+        """Most recent timestamp anywhere on this task."""
+        stamps = [m[1] for m in self.meta] + [s.touched for s in self.subs if s.touched]
+        return max((s for s in stamps if s), default="")
+
+    @property
+    def elapsed(self) -> str | None:
+        st = self.get("started")
+        en = self.get("done") or self.get("blocked") or self.get("dropped")
+        if not st:
+            return None
+        a, b = parse_iso(st[0]), parse_iso(en[0]) if en else now()
+        if not a or not b:
+            return None
+        return dur((b - a).total_seconds())
+
+    @property
+    def reason(self) -> str:
+        for key in ("blocked", "dropped"):
+            m = self.get(key)
+            if m and m[1]:
+                return m[1]
+        return ""
+
+    def to_lines(self, depth: int = 0) -> list[str]:
+        pad = "  " * depth
+        out = [f"{pad}- [{MARK[self.state]}] {self.num} · {self.text}"]
+        meta_pad = pad + "      "
+        for key, stamp, rest in self.meta:
+            out.append(f"{meta_pad}@{key} {stamp}{(' ' + rest) if rest else ''}".rstrip())
+        for n in self.notes:
+            out.append(f"{meta_pad}-> {n}")
+        for s in self.subs:
+            out.extend(s.to_lines(depth + 1))
+        return out
+
+    def to_dict(self) -> dict:
+        return {
+            "num": self.num, "state": self.state, "text": self.text,
+            "notes": list(self.notes), "elapsed": self.elapsed,
+            "reason": self.reason, "touched": self.touched,
+            "meta": {k: {"at": s, "rest": r} for k, s, r in self.meta},
+            "subs": [s.to_dict() for s in self.subs],
+        }
+
+
+class Ledger:
+    def __init__(self, path: Path):
+        self.path = path
+        self.fm: dict[str, str] = {}
+        self.tasks: list[Task] = []
+        self.decisions: list[str] = []
+        self.surfaced: list[str] = []
+        self.links: list[str] = []
+        self.wrapup: list[str] = []
+        self.extra: list[str] = []          # unrecognised sections, preserved verbatim
+
+    # -- io ----------------------------------------------------------------- #
+    @classmethod
+    def load(cls, path: Path) -> "Ledger":
+        led = cls(path)
+        raw = path.read_text(encoding="utf-8").splitlines()
+        i = 0
+        if raw and raw[0].strip() == "---":
+            i = 1
+            while i < len(raw) and raw[i].strip() != "---":
+                if ":" in raw[i]:
+                    k, _, v = raw[i].partition(":")
+                    led.fm[k.strip()] = v.strip()
+                i += 1
+            i += 1
+        section, buf = None, []
+
+        def flush():
+            if section == "Tasks":
+                led.tasks = parse_tasks(buf)
+            elif section == "Decisions":
+                led.decisions = strip_blanks(buf)
+            elif section == "Surfaced":
+                led.surfaced = strip_blanks(buf)
+            elif section == "Links":
+                led.links = strip_blanks(buf)
+            elif section == "Wrap-up":
+                led.wrapup = strip_blanks(buf)
+            elif section is not None:
+                led.extra.extend([f"## {section}", ""] + strip_blanks(buf) + [""])
+
+        for line in raw[i:]:
+            if line.startswith("## "):
+                flush()
+                section, buf = line[3:].strip(), []
+            elif line.startswith("# ") and section is None:
+                continue
+            else:
+                buf.append(line)
+        flush()
+        return led
+
+    def save(self) -> None:
+        self.fm["updated"] = iso()
+        out = ["---"]
+        order = ["id", "goal", "status", "created", "updated", "dir", "repo",
+                 "branch", "session", "pane", "pr"]
+        for k in order:
+            if self.fm.get(k) is not None and k in self.fm:
+                out.append(f"{k}: {self.fm[k]}")
+        for k, v in self.fm.items():
+            if k not in order:
+                out.append(f"{k}: {v}")
+        out += ["---", "", f"# {self.fm.get('goal', self.fm.get('id', 'ledger'))}", ""]
+        out += ["## Tasks", ""]
+        for t in self.tasks:
+            out.extend(t.to_lines())
+        if not self.tasks:
+            out.append("_none yet_")
+        for name, body in (("Decisions", self.decisions), ("Surfaced", self.surfaced),
+                           ("Links", self.links), ("Wrap-up", self.wrapup)):
+            out += ["", f"## {name}", ""]
+            out += body if body else ["_none_"]
+        if self.extra:
+            out += [""] + self.extra
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+
+    # -- lookup ------------------------------------------------------------- #
+    def flat(self) -> list[Task]:
+        out: list[Task] = []
+        for t in self.tasks:
+            out.append(t)
+            out.extend(t.subs)
+        return out
+
+    def find(self, num: str) -> Task:
+        num = str(num).strip().lstrip("#")
+        for t in self.flat():
+            if t.num == num:
+                return t
+        die(f"no task {num} in {self.fm.get('id')}. `ledger show` lists them.")
+
+    def counts(self) -> dict[str, int]:
+        c = {s: 0 for s in MARK}
+        for t in self.tasks:
+            c[t.state] += 1
+        return c
+
+    def progress(self) -> tuple[int, int]:
+        live = [t for t in self.tasks if t.state != DROPPED]
+        return sum(1 for t in live if t.state == DONE), len(live)
+
+    def current(self) -> Task | None:
+        for t in self.flat():
+            if t.state == DOING:
+                return t
+        return None
+
+    def next_up(self) -> Task | None:
+        for t in self.tasks:
+            if t.state == TODO:
+                return t
+        return None
+
+    def next_num(self, parent: Task | None = None) -> str:
+        if parent is None:
+            n = max((int(t.num) for t in self.tasks if t.num.isdigit()), default=0)
+            return str(n + 1)
+        n = max((int(s.num.split(".")[-1]) for s in parent.subs), default=0)
+        return f"{parent.num}.{n + 1}"
+
+    def to_dict(self) -> dict:
+        done, total = self.progress()
+        cur = self.current()
+        return {
+            **self.fm,
+            "path": str(self.path),
+            "done": done, "total": total,
+            "counts": self.counts(),
+            "current": cur.to_dict() if cur else None,
+            "stale": self.stale_minutes(),
+            "tasks": [t.to_dict() for t in self.tasks],
+            "decisions": self.decisions, "surfaced": self.surfaced,
+            "links": self.links, "wrapup": self.wrapup,
+            "warnings": doctor(self),
+        }
+
+    def stale_minutes(self) -> int:
+        t = parse_iso(self.fm.get("updated", ""))
+        return int((now() - t).total_seconds() // 60) if t else 0
+
+
+def strip_blanks(lines: list[str]) -> list[str]:
+    out = [l.rstrip() for l in lines]
+    while out and not out[0].strip():
+        out.pop(0)
+    while out and not out[-1].strip():
+        out.pop()
+    return [l for l in out if l.strip() != "_none_"]
+
+
+def parse_tasks(lines: list[str]) -> list[Task]:
+    tasks: list[Task] = []
+    cur: Task | None = None
+    for line in lines:
+        m = TASK_RE.match(line)
+        if m:
+            t = Task(m["num"], STATE_OF.get(m["mark"], TODO), m["text"].strip())
+            if "." in t.num and tasks:
+                parent = next((p for p in tasks if p.num == t.num.split(".")[0]), None)
+                (parent.subs if parent else tasks).append(t)
+            else:
+                tasks.append(t)
+            cur = t
+            continue
+        if cur is None:
+            continue
+        m = META_RE.match(line)
+        if m:
+            cur.meta.append((m["key"], m["stamp"], (m["rest"] or "").strip()))
+            continue
+        m = NOTE_RE.match(line)
+        if m:
+            cur.notes.append(m["text"].strip())
+    return tasks
+
+
+# --------------------------------------------------------------------------- #
+# discovery / binding
+# --------------------------------------------------------------------------- #
+
+def sh(*args: str) -> str:
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        return ""
+
+
+def git_ctx() -> dict[str, str]:
+    top = sh("git", "rev-parse", "--show-toplevel")
+    ctx = {"dir": top or os.getcwd()}
+    if top:
+        ctx["branch"] = sh("git", "rev-parse", "--abbrev-ref", "HEAD")
+        common = sh("git", "rev-parse", "--path-format=absolute", "--git-common-dir")
+        ctx["repo"] = Path(common).parent.name if common else Path(top).name
+    else:
+        ctx["repo"] = Path(ctx["dir"]).name
+    return ctx
+
+
+def binding_key() -> str:
+    return git_ctx()["dir"]
+
+
+def bindings() -> dict[str, str]:
+    try:
+        return json.loads(BINDINGS.read_text())
+    except Exception:
+        return {}
+
+
+def bind(lid: str) -> None:
+    b = bindings()
+    b[binding_key()] = lid
+    BINDINGS.parent.mkdir(parents=True, exist_ok=True)
+    BINDINGS.write_text(json.dumps(b, indent=2))
+
+
+def all_ledgers() -> list[Ledger]:
+    if not LEDGER_DIR.exists():
+        return []
+    out = []
+    for p in sorted(LEDGER_DIR.glob("*.md")):
+        try:
+            out.append(Ledger.load(p))
+        except Exception:
+            continue
+    return sorted(out, key=lambda l: l.fm.get("updated", ""), reverse=True)
+
+
+def resolve(lid: str | None, quiet: bool = False, active_only: bool = True) -> Ledger | None:
+    lid = lid or os.environ.get("LEDGER_ID")
+    if lid:
+        p = LEDGER_DIR / f"{lid}.md"
+        if p.exists():
+            return Ledger.load(p)
+        matches = [l for l in all_ledgers() if lid in l.fm.get("id", "")]
+        if len(matches) == 1:
+            return matches[0]
+        if not quiet:
+            die(f"no ledger matching '{lid}'")
+        return None
+    key = binding_key()
+    bound = bindings().get(key)
+    if bound and (LEDGER_DIR / f"{bound}.md").exists():
+        led = Ledger.load(LEDGER_DIR / f"{bound}.md")
+        if led.fm.get("status") == "active" or not active_only:
+            return led
+    for led in all_ledgers():
+        if led.fm.get("status") == "active" and led.fm.get("dir") == key:
+            return led
+    if not active_only:
+        # Nothing live here — an explicit read still wants the last run, so
+        # `ledger show` after `ledger wrap` keeps working.
+        for led in all_ledgers():
+            if led.fm.get("dir") == key:
+                return led
+    if quiet:
+        return None
+    die("no active ledger bound to this directory.\n"
+        "  start one:  ledger new \"<goal>\"\n"
+        "  or pick:    ledger list")
+
+
+def need(lid: str | None, active_only: bool = True) -> Ledger:
+    led = resolve(lid, active_only=active_only)
+    assert led is not None
+    return led
+
+
+def die(msg: str) -> None:
+    print(f"ledger: {msg}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def stdin_has_data() -> bool:
+    """True only when stdin is genuinely piped or redirected from a file.
+
+    `isatty()` alone is not enough: agent harnesses run commands with stdin
+    closed or pointed at /dev/null, and `ledger new` must not treat that as
+    "the caller is feeding me tasks".
+    """
+    import stat
+    try:
+        mode = os.fstat(0).st_mode
+    except OSError:
+        return False
+    return stat.S_ISFIFO(mode) or stat.S_ISREG(mode)
+
+
+def slugify(text: str, words: int = 6) -> str:
+    s = re.sub(r"[^a-z0-9\s-]", "", text.lower())
+    return "-".join(s.split()[:words]) or "work"
+
+
+# --------------------------------------------------------------------------- #
+# doctor — breakdown + hygiene checks
+# --------------------------------------------------------------------------- #
+
+def doctor(led: Ledger) -> list[dict]:
+    w: list[dict] = []
+    doing = [t for t in led.flat() if t.state == DOING]
+    if len(doing) > 1:
+        w.append({"level": "warn", "code": "split-focus",
+                  "msg": f"{len(doing)} tasks in progress at once ({', '.join(t.num for t in doing)}). "
+                         "Keep one; put the rest back to todo."})
+    for t in doing:
+        last = parse_iso(t.touched) or parse_iso(led.fm.get("updated", ""))
+        if last and (now() - last).total_seconds() > HEARTBEAT_MIN * 60:
+            w.append({"level": "block", "code": "heartbeat",
+                      "msg": f"task {t.num} ({t.text}) has been in progress {ago(t.touched)} "
+                             f"with no update. Split it, note progress, or close it."})
+    live = [t for t in led.tasks if t.state != DROPPED]
+    if len(live) > MAX_TASKS:
+        w.append({"level": "warn", "code": "too-many",
+                  "msg": f"{len(live)} top-level tasks (soft cap {MAX_TASKS}). "
+                         "Split into milestones or a second ledger."})
+    if led.fm.get("status") == "active" and live and all(
+            t.state in (DONE, DROPPED) for t in led.tasks):
+        w.append({"level": "block", "code": "unwrapped",
+                  "msg": "every task is closed but the ledger is still open. "
+                         "Run `ledger wrap` and hand the user the wrap-up."})
+    for t in led.tasks:
+        if t.state == BLOCKED and not t.reason:
+            w.append({"level": "warn", "code": "why",
+                      "msg": f"task {t.num} is blocked with no reason recorded."})
+        if t.state == DONE and not t.notes:
+            w.append({"level": "info", "code": "evidence",
+                      "msg": f"task {t.num} is done with no evidence line "
+                             "(`ledger done {n} \"what proves it\"`)."})
+    return w
+
+
+# --------------------------------------------------------------------------- #
+# rendering
+# --------------------------------------------------------------------------- #
+
+def bar(done: int, total: int, width: int = 12) -> str:
+    if total <= 0:
+        return "·" * width
+    filled = round(width * done / total)
+    return paint("█" * filled, "green") + paint("░" * (width - filled), "grey")
+
+
+def task_line(t: Task, indent: str = "  ", show_meta: bool = True) -> list[str]:
+    color = STATE_COLOR[t.state]
+    g = paint(GLYPH[t.state], color)
+    num = paint(f"{t.num}", "dim")
+    text = t.text
+    if t.state == DONE:
+        text = paint(text, "dim")
+    elif t.state == DOING:
+        text = paint(text, "bold")
+    elif t.state == DROPPED:
+        text = paint(text, "dim")
+    tail = ""
+    el = t.elapsed
+    if el and t.state in (DONE, DOING):
+        tail = paint(f"  {el}", "grey")
+    if t.reason:
+        tail = paint(f"  — {t.reason}", "yellow" if t.state == BLOCKED else "grey")
+    out = [f"{indent}{g} {num} {text}{tail}"]
+    if show_meta:
+        for n in t.notes:
+            out.append(paint(f"{indent}     ↳ {n}", "grey"))
+    for s in t.subs:
+        out.extend(task_line(s, indent + "   ", show_meta))
+    return out
+
+
+def render_show(led: Ledger) -> str:
+    done, total = led.progress()
+    lines = [
+        "",
+        f"  {paint(led.fm.get('goal', ''), 'bold')}",
+        f"  {paint(led.fm.get('id', ''), 'grey')}  {bar(done, total)}  {done}/{total}"
+        f"  {paint(led.fm.get('status', ''), 'grey')}",
+    ]
+    ctx = " · ".join(x for x in [led.fm.get("repo"), led.fm.get("branch"),
+                                     led.fm.get("pr")] if x)
+    if ctx:
+        lines.append(f"  {paint(ctx, 'grey')}")
+    lines += ["", f"  {paint('TASKS', 'dim')}"]
+    for t in led.tasks:
+        lines.extend(task_line(t))
+    if not led.tasks:
+        lines.append(paint("    (none yet)", "grey"))
+    for title, body in (("DECISIONS", led.decisions), ("SURFACED — not fixed", led.surfaced),
+                        ("LINKS", led.links)):
+        if body:
+            lines += ["", f"  {paint(title, 'dim')}"]
+            lines += [f"    {l}" for l in body]
+    warns = doctor(led)
+    if warns:
+        lines += ["", f"  {paint('CHECKS', 'dim')}"]
+        for x in warns:
+            c = {"block": "red", "warn": "yellow", "info": "grey"}[x["level"]]
+            lines.append(f"    {paint('!', c)} {x['msg']}")
+    if led.wrapup:
+        lines += ["", f"  {paint('WRAP-UP', 'dim')}"]
+        lines += [f"    {l}" for l in led.wrapup]
+    lines += ["", paint(f"  {led.path}", "grey"), ""]
+    return "\n".join(lines)
+
+
+def render_board(led: Ledger, full: bool = False) -> str:
+    """Compact board — what the Stop hook shows after every turn."""
+    done, total = led.progress()
+    c = led.counts()
+    head = f"─ ledger · {led.fm.get('id','')} "
+    head += "─" * max(4, 62 - len(head)) + f" {done}/{total} ─"
+    lines = [head, f"  {led.fm.get('goal','')}"]
+    tasks = led.tasks
+    if not full and len(tasks) > 14:
+        shown = [t for t in tasks if t.state != DONE]
+        lines.append(paint(f"  ✓ {c[DONE]} done (see `ledger show`)", "grey"))
+    else:
+        shown = tasks
+    for t in shown:
+        lines.extend(task_line(t, indent="  ", show_meta=(t.state in (DOING, BLOCKED))))
+    if led.surfaced:
+        lines.append(paint(f"  ⚡ {len(led.surfaced)} surfaced, not fixed", "grey"))
+    nxt = led.next_up()
+    if nxt and not led.current():
+        lines.append(paint(f"  next: {nxt.num} {nxt.text}", "grey"))
+    return "\n".join(lines)
+
+
+def render_list(leds: list[Ledger], show_all: bool) -> str:
+    live = [l for l in leds if l.fm.get("status") == "active"] if not show_all else leds
+    if not live:
+        return "  no active ledgers.\n"
+    lines = ["", f"  {paint('LEDGERS', 'bold')}   {paint(iso()[:16].replace('T',' ') + ' UTC', 'grey')}", ""]
+    for l in live:
+        done, total = l.progress()
+        cur = l.current()
+        ctx = " · ".join(x for x in [l.fm.get("repo"), l.fm.get("branch")] if x)
+        state = l.fm.get("status", "")
+        blocked = [t for t in l.tasks if t.state == BLOCKED]
+        lines.append(f"  {paint(l.fm.get('goal',''), 'bold')}")
+        tail = ""
+        if cur:
+            tail = f"now: {cur.text}"
+        elif blocked:
+            tail = paint(f"blocked: {blocked[0].reason or blocked[0].text}", "yellow")
+        elif state != "active":
+            tail = paint(state, "grey")
+        else:
+            nxt = l.next_up()
+            tail = f"next: {nxt.text}" if nxt else "idle"
+        lines.append(f"    {bar(done, total)} {done}/{total}  {tail}")
+        lines.append(paint(f"    {ctx}   {l.fm.get('id','')}   {since(l.fm.get('updated',''))}", "grey"))
+        lines.append("")
+    n_active = sum(1 for l in leds if l.fm.get("status") == "active")
+    n_wrap = sum(1 for l in leds if l.fm.get("status") == "wrapped")
+    lines.append(paint(f"  {n_active} active · {n_wrap} wrapped", "grey"))
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_status(led: Ledger) -> str:
+    done, total = led.progress()
+    cur = led.current()
+    blocked = [t for t in led.tasks if t.state == BLOCKED]
+    if cur:
+        tail = cur.text
+    elif blocked:
+        tail = f"blocked: {blocked[0].text}"
+    else:
+        nxt = led.next_up()
+        tail = nxt.text if nxt else led.fm.get("status", "")
+    return f"▸ {done}/{total} {tail}"
+
+
+def render_wrap(led: Ledger) -> str:
+    done = [t for t in led.tasks if t.state == DONE]
+    open_ = [t for t in led.tasks if t.state in (TODO, DOING)]
+    blocked = [t for t in led.tasks if t.state == BLOCKED]
+    dropped = [t for t in led.tasks if t.state == DROPPED]
+    out = [f"## Wrap-up — {led.fm.get('goal','')}", ""]
+    out.append(f"**Shipped** ({len(done)}/{len(led.tasks)} tasks)")
+    out.append("")
+    for t in done:
+        ev = f" — {'; '.join(t.notes)}" if t.notes else ""
+        out.append(f"- {t.text}{ev}")
+    if not done:
+        out.append("- nothing completed")
+    if blocked or open_:
+        out += ["", "**Still open**", ""]
+        for t in blocked:
+            out.append(f"- ⚠ {t.text} — blocked: {t.reason or 'no reason recorded'}")
+        for t in open_:
+            out.append(f"- {t.text} — {'in progress' if t.state == DOING else 'not started'}")
+    if dropped:
+        out += ["", "**Deliberately skipped**", ""]
+        for t in dropped:
+            out.append(f"- {t.text} — {t.reason or 'no reason recorded'}")
+    if led.decisions:
+        out += ["", "**Decisions**", ""] + led.decisions
+    if led.surfaced:
+        out += ["", "**Surfaced, not fixed**", ""] + led.surfaced
+    if led.links:
+        out += ["", "**Links**", ""] + led.links
+    return "\n".join(out)
+
+
+# --------------------------------------------------------------------------- #
+# commands
+# --------------------------------------------------------------------------- #
+
+def cmd_new(a) -> None:
+    goal = a.goal.strip()
+    ctx = git_ctx()
+    base = a.id or f"{dt.date.today().isoformat()}-{slugify(goal)}"
+    lid, n = base, 2
+    while (LEDGER_DIR / f"{lid}.md").exists():
+        lid, n = f"{base}-{n}", n + 1
+    led = Ledger(LEDGER_DIR / f"{lid}.md")
+    led.fm = {
+        "id": lid, "goal": goal, "status": "active", "created": iso(),
+        "updated": iso(), "dir": a.dir or ctx["dir"], "repo": a.repo or ctx.get("repo", ""),
+        "branch": a.branch or ctx.get("branch", ""),
+    }
+    if os.environ.get("HERDR_PANE_ID"):
+        led.fm["pane"] = os.environ["HERDR_PANE_ID"]
+    tasks = list(a.task or [])
+    if stdin_has_data() and not a.no_stdin:
+        tasks += [l.strip().lstrip("-[ ]x").strip()
+                  for l in sys.stdin.read().splitlines() if l.strip()]
+    for text in tasks:
+        led.tasks.append(Task(led.next_num(), TODO, text))
+    led.save()
+    bind(lid)
+    print(lid if a.quiet else render_show(led))
+
+
+def cmd_add(a) -> None:
+    led = need(a.id)
+    parent = led.find(a.parent) if a.parent else None
+    created = []
+    for text in a.text:
+        t = Task(led.next_num(parent), TODO, text.strip())
+        (parent.subs if parent else led.tasks).append(t)
+        created.append(t.num)
+    led.save()
+    ok(led, f"added {', '.join(created)}")
+
+
+
+def cmd_start(a) -> None:
+    led = need(a.id)
+    other = [t for t in led.flat() if t.state == DOING and t.num != str(a.num)]
+    t = led.find(a.num)
+    if a.solo:
+        for o in other:
+            o.state = TODO
+            o.unset("started")
+    t.state = DOING
+    t.set("started")
+    t.unset("blocked")
+    led.save()
+    msg = f"{t.num} → doing"
+    if other and not a.solo:
+        msg += paint(f"  (also in progress: {', '.join(o.num for o in other)})", "yellow")
+    ok(led, msg)
+
+
+def cmd_done(a) -> None:
+    led = need(a.id)
+    t = led.find(a.num)
+    t.state = DONE
+    if not t.get("started"):
+        t.set("started")
+    t.set("done")
+    t.unset("blocked")
+    for ev in a.evidence:
+        t.notes.append(ev.strip())
+    for s in t.subs:
+        if s.state in (TODO, DOING):
+            s.state = DONE
+            s.set("done")
+    led.save()
+    ok(led, f"{t.num} ✓ {t.text}")
+
+
+def cmd_block(a) -> None:
+    led = need(a.id)
+    t = led.find(a.num)
+    t.state = BLOCKED
+    t.set("blocked", " ".join(a.why).strip())
+    led.save()
+    ok(led, f"{t.num} ⚠ blocked")
+
+
+def cmd_unblock(a) -> None:
+    led = need(a.id)
+    t = led.find(a.num)
+    t.state = DOING if t.get("started") else TODO
+    t.unset("blocked")
+    led.save()
+    ok(led, f"{t.num} → {t.state}")
+
+
+def cmd_drop(a) -> None:
+    led = need(a.id)
+    t = led.find(a.num)
+    t.state = DROPPED
+    t.set("dropped", " ".join(a.why).strip())
+    led.save()
+    ok(led, f"{t.num} – dropped")
+
+
+def cmd_rm(a) -> None:
+    led = need(a.id)
+    t = led.find(a.num)
+    if "." in t.num:
+        parent = led.find(t.num.split(".")[0])
+        parent.subs = [x for x in parent.subs if x.num != t.num]
+    else:
+        led.tasks = [x for x in led.tasks if x.num != t.num]
+    led.save()
+    ok(led, f"removed {t.num} ({t.text})")
+
+
+def cmd_note(a) -> None:
+    led = need(a.id)
+    text = " ".join(a.text).strip()
+    if a.num:
+        t = led.find(a.num)
+        t.notes.append(text)
+        t.set("noted", "")
+    else:
+        cur = led.current()
+        if not cur:
+            die("no task in progress; pass a task number.")
+        cur.notes.append(text)
+        cur.set("noted", "")
+    led.save()
+    ok(led, "noted")
+
+
+def cmd_decide(a) -> None:
+    led = need(a.id)
+    entry = f"- **{local(iso(), '%d %b %H:%M')}** — {' '.join(a.what).strip()}"
+    led.decisions.append(entry)
+    if a.why:
+        led.decisions.append(f"  **Why:** {a.why}")
+    led.save()
+    ok(led, "decision recorded")
+
+
+def cmd_surface(a) -> None:
+    led = need(a.id)
+    led.surfaced.append(f"- {' '.join(a.what).strip()}")
+    led.save()
+    ok(led, "surfaced (not fixed)")
+
+
+def cmd_link(a) -> None:
+    led = need(a.id, active_only=False)
+    label = a.label or ("PR" if "/pull/" in a.url else "link")
+    led.links.append(f"- {label}: {a.url}")
+    if label.upper() == "PR":
+        led.fm["pr"] = a.url
+    led.save()
+    ok(led, f"linked {label}")
+
+
+def cmd_show(a) -> None:
+    led = need(a.id, active_only=False)
+    print(json.dumps(led.to_dict(), indent=2) if a.json else render_show(led))
+
+
+def cmd_board(a) -> None:
+    led = resolve(a.id, quiet=True)
+    if not led:
+        return
+    print(render_board(led, full=a.full))
+
+
+def cmd_status(a) -> None:
+    led = resolve(a.id, quiet=True)
+    if not led:
+        return
+    print(render_status(led))
+
+
+def cmd_list(a) -> None:
+    leds = all_ledgers()
+    if a.json:
+        print(json.dumps([l.to_dict() for l in leds], indent=2))
+        return
+    print(render_list(leds, a.all))
+
+
+def cmd_doctor(a) -> None:
+    led = resolve(a.id, quiet=True)
+    warns = doctor(led) if led else []
+    if a.json:
+        print(json.dumps(warns))
+        return
+    if not warns:
+        print("  ledger looks healthy.")
+        return
+    for w in warns:
+        print(f"  [{w['level']}] {w['msg']}")
+
+
+def cmd_wrap(a) -> None:
+    led = need(a.id, active_only=False)
+    text = render_wrap(led)
+    led.wrapup = text.splitlines()[2:]
+    if not a.keep_open:
+        led.fm["status"] = "wrapped"
+    led.save()
+    print(text)
+
+
+def cmd_reopen(a) -> None:
+    led = need(a.id, active_only=False)
+    led.fm["status"] = "active"
+    led.save()
+    bind(led.fm["id"])
+    ok(led, "reopened")
+
+
+def cmd_abandon(a) -> None:
+    led = need(a.id, active_only=False)
+    led.fm["status"] = "abandoned"
+    led.decisions.append(f"- **{local(iso(), '%d %b %H:%M')}** — abandoned: {' '.join(a.why).strip()}")
+    led.save()
+    ok(led, "abandoned")
+
+
+def cmd_set(a) -> None:
+    led = need(a.id, active_only=False)
+    led.fm[a.key] = a.value
+    led.save()
+    ok(led, f"{a.key} = {a.value}")
+
+
+def cmd_path(a) -> None:
+    led = need(a.id, active_only=False)
+    print(led.path)
+
+
+def cmd_bind(a) -> None:
+    led = need(a.id, active_only=False)
+    bind(led.fm["id"])
+    ok(led, f"bound to {binding_key()}")
+
+
+def ok(led: Ledger, msg: str) -> None:
+    done, total = led.progress()
+    print(f"  {msg}   {paint(f'{done}/{total}', 'grey')}")
+
+
+# --------------------------------------------------------------------------- #
+# cli
+# --------------------------------------------------------------------------- #
+
+def main() -> None:
+    p = argparse.ArgumentParser(prog="ledger", description=__doc__.splitlines()[0])
+    p.add_argument("--id", help="ledger id (default: the one bound to this directory)")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("new", help="start a ledger")
+    s.add_argument("goal")
+    s.add_argument("-t", "--task", action="append", help="repeatable; also reads tasks from stdin")
+    s.add_argument("--no-stdin", action="store_true")
+    s.add_argument("-q", "--quiet", action="store_true", help="print only the new id")
+    s.add_argument("--dir"); s.add_argument("--repo"); s.add_argument("--branch")
+    s.set_defaults(func=cmd_new)
+
+    s = sub.add_parser("add", help="add task(s)")
+    s.add_argument("text", nargs="+")
+    s.add_argument("-p", "--parent", help="add as a subtask of this task number")
+    s.set_defaults(func=cmd_add)
+
+    s = sub.add_parser("start", help="mark a task in progress")
+    s.add_argument("num"); s.add_argument("--solo", action="store_true",
+                                          help="put any other in-progress task back to todo")
+    s.set_defaults(func=cmd_start)
+
+    s = sub.add_parser("done", help="close a task with evidence")
+    s.add_argument("num"); s.add_argument("evidence", nargs="*")
+    s.set_defaults(func=cmd_done)
+
+    s = sub.add_parser("block", help="mark a task blocked, with a reason")
+    s.add_argument("num"); s.add_argument("why", nargs="+")
+    s.set_defaults(func=cmd_block)
+
+    s = sub.add_parser("unblock"); s.add_argument("num"); s.set_defaults(func=cmd_unblock)
+
+    s = sub.add_parser("drop", help="deliberately not doing this, with a reason")
+    s.add_argument("num"); s.add_argument("why", nargs="+")
+    s.set_defaults(func=cmd_drop)
+
+    s = sub.add_parser("rm", help="delete a task outright (a typo, not a decision — use drop for that)")
+    s.add_argument("num"); s.set_defaults(func=cmd_rm)
+
+    s = sub.add_parser("note", help="append progress to a task")
+    s.add_argument("text", nargs="+"); s.add_argument("-n", "--num")
+    s.set_defaults(func=cmd_note)
+
+    s = sub.add_parser("decide", help="record a decision and why")
+    s.add_argument("what", nargs="+"); s.add_argument("--why", default="")
+    s.set_defaults(func=cmd_decide)
+
+    s = sub.add_parser("surface", help="record something noticed but deliberately not fixed")
+    s.add_argument("what", nargs="+"); s.set_defaults(func=cmd_surface)
+
+    s = sub.add_parser("link"); s.add_argument("url"); s.add_argument("--label")
+    s.set_defaults(func=cmd_link)
+
+    s = sub.add_parser("show", help="full ledger")
+    s.add_argument("--json", action="store_true"); s.set_defaults(func=cmd_show)
+
+    s = sub.add_parser("board", help="compact board (used by the Stop hook)")
+    s.add_argument("--full", action="store_true"); s.set_defaults(func=cmd_board)
+
+    s = sub.add_parser("status", help="one line (used by the status line)")
+    s.set_defaults(func=cmd_status)
+
+    s = sub.add_parser("list", help="every ledger, across every repo")
+    s.add_argument("-a", "--all", action="store_true"); s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_list)
+
+    s = sub.add_parser("doctor", help="breakdown + hygiene checks")
+    s.add_argument("--json", action="store_true"); s.set_defaults(func=cmd_doctor)
+
+    s = sub.add_parser("wrap", help="produce the wrap-up and close the ledger")
+    s.add_argument("--keep-open", action="store_true"); s.set_defaults(func=cmd_wrap)
+
+    sub.add_parser("reopen").set_defaults(func=cmd_reopen)
+    s = sub.add_parser("abandon"); s.add_argument("why", nargs="+"); s.set_defaults(func=cmd_abandon)
+    s = sub.add_parser("set"); s.add_argument("key"); s.add_argument("value"); s.set_defaults(func=cmd_set)
+    sub.add_parser("path").set_defaults(func=cmd_path)
+    sub.add_parser("bind").set_defaults(func=cmd_bind)
+
+    a = p.parse_args()
+    LEDGER_DIR.mkdir(parents=True, exist_ok=True)
+    a.func(a)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BrokenPipeError:
+        pass
+    except KeyboardInterrupt:
+        raise SystemExit(130)

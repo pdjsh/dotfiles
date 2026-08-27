@@ -13,6 +13,7 @@ Before responding to any non-trivial coding task, invoke the relevant workflow s
 - implement — approved plan, ready to execute (enforces worktree + feature branch)
 - review — implementation done, before commit/PR (runs /review + /security-review + tests)
 - reflect — at session start when feedback has accumulated
+- ledger — ANY work longer than a couple of steps: open a ledger before the first edit, move it as you go, wrap it at the end
 
 If there is even a 1% chance a workflow skill might apply, invoke it. Auto mode does not license skipping this check — auto skips approval gates, not review.
 
@@ -23,6 +24,8 @@ Red flags — these thoughts mean STOP and invoke the skill:
 - "I already know what to do" → invoke anyway, skills evolve
 
 Never commit directly to master. Non-trivial work lives on a feature branch in a git worktree, created BEFORE the first commit.
+
+Nothing happens that is not on the ledger. `ledger new "<goal>" -t "..."` before the first edit; `ledger start N` / `ledger note` / `ledger done N "<evidence>"` as you go; `ledger surface` instead of silently expanding scope; `ledger wrap` at the end. A run that ends with a task still in progress was abandoned, not finished.
 </EXTREMELY_IMPORTANT>'
 
 jq -n --arg ctx "$context" '{

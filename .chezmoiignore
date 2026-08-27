@@ -24,6 +24,11 @@
 # its own allowlist). Do not remove this line to "sync memory too".
 .claude/projects
 
+# Task ledgers (~/.claude/ledgers) are per-run working notes. They name client
+# repos, branches and internal systems, and THIS REPO IS PUBLIC — so the tool that
+# writes them is tracked here and the ledgers themselves never are.
+.claude/ledgers
+
 # herdr keeps its runtime state alongside config.toml in ~/.config/herdr: unix sockets,
 # a multi-megabyte server log, and per-machine session/plugin state. Only config.toml is
 # portable. Listing the rest here keeps a stray `chezmoi add ~/.config/herdr` from
